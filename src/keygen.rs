@@ -1,15 +1,8 @@
 use crate::context::BlsContext;
-use gadget_sdk::{
-    compute_sha256_hash,
-    event_listener::tangle::{
-        jobs::{services_post_processor, services_pre_processor},
-        TangleEventListener,
-    },
-    job,
-    network::round_based_compat::NetworkDeliveryWrapper,
-    tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled,
-    Error as GadgetError,
-};
+use gadget_sdk::{event_listener::tangle::{
+    jobs::{services_post_processor, services_pre_processor},
+    TangleEventListener,
+}, job, network::round_based_compat::NetworkDeliveryWrapper, tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled, ByteBuf, Error as GadgetError};
 use sp_core::ecdsa::Public;
 use std::collections::BTreeMap;
 
@@ -37,7 +30,7 @@ use std::collections::BTreeMap;
 /// - Failed to get party information
 /// - MPC protocol execution failed
 /// - Serialization of results failed
-pub async fn keygen(n: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError> {
+pub async fn keygen(n: u16, context: BlsContext) -> Result<ByteBuf, GadgetError> {
     let t = n - 1;
     // Get configuration and compute deterministic values
     let blueprint_id = context
@@ -48,7 +41,8 @@ pub async fn keygen(n: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
 
-    let (meta_hash, deterministic_hash) = compute_deterministic_hashes(n, blueprint_id, call_id);
+    let (meta_hash, deterministic_hash) =
+        crate::compute_deterministic_hashes(n, blueprint_id, call_id, KEYGEN_SALT);
 
     // Setup party information
     let (i, operators) = context
@@ -65,7 +59,7 @@ pub async fn keygen(n: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
     let i = i as u16;
 
     gadget_sdk::info!(
-        "Starting BLS Keygen for Party {i}, n={n}, eid={}",
+        "Starting BLS Keygen for party {i}, n={n}, eid={}",
         hex::encode(deterministic_hash)
     );
 
@@ -78,23 +72,27 @@ pub async fn keygen(n: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
 
     let party = round_based::party::MpcParty::connected(network);
 
-    let output = crate::state_machine::bls_keygen_protocol(party, i, t, n).await?;
+    let output = crate::keygen_state_machine::bls_keygen_protocol(party, i, t, n, call_id).await?;
 
     gadget_sdk::info!(
         "Ending BLS Keygen for party {i}, n={n}, eid={}",
         hex::encode(deterministic_hash)
     );
 
+    let public_key = output
+        .uncompressed_pk
+        .clone()
+        .ok_or_else(|| KeygenError::MpcError("Public key missing".to_string()))?;
+
     // Store the results
     let store_key = hex::encode(meta_hash);
     context.store.set(&store_key, output);
 
-    Ok(vec![])
+    Ok(public_key.into())
 }
 
 /// Configuration constants for the BLS keygen process
 const KEYGEN_SALT: &str = "bls-keygen";
-const META_SALT: &str = "bls";
 
 /// Error type for keygen-specific operations
 #[derive(Debug, thiserror::Error)]
@@ -116,18 +114,4 @@ impl From<KeygenError> for GadgetError {
     fn from(err: KeygenError) -> Self {
         GadgetError::Other(err.to_string())
     }
-}
-
-/// Helper function to compute deterministic hashes for the keygen process
-fn compute_deterministic_hashes(n: u16, blueprint_id: u64, call_id: u64) -> ([u8; 32], [u8; 32]) {
-    let meta_hash = compute_sha256_hash!(
-        n.to_be_bytes(),
-        blueprint_id.to_be_bytes(),
-        call_id.to_be_bytes(),
-        META_SALT
-    );
-
-    let deterministic_hash = compute_sha256_hash!(meta_hash.as_ref(), KEYGEN_SALT);
-
-    (meta_hash, deterministic_hash)
 }
