@@ -6,9 +6,10 @@ edition = "2021"
 
 [package.metadata.blueprint]
 manager = { Evm = "BlsBlueprint" }
+master_revision = "Latest"
 
 [dependencies]
-gadget-sdk = { git = "https://github.com/tangle-network/gadget/", features = ["std"] }
+gadget-sdk = { git = "https://github.com/tangle-network/gadget/", branch = "bls_debugging_dec10", features = ["std"] }
 color-eyre = { version = "0.6", features = ["tracing-error", "color-spantrace"] }
 tokio = { version = "1.40", default-features = false, features = ["full"] }
 hex = { version = "0.4.3", default-features = false }
@@ -28,11 +29,11 @@ snowbridge-milagro-bls = "1.5.4"
 gennaro-dkg = { version = "0.8.0", features = ["curve25519"]}
 
 [build-dependencies]
-blueprint-metadata = { git = "https://github.com/tangle-network/gadget/" }
+blueprint-metadata = { git = "https://github.com/tangle-network/gadget/", branch = "bls_debugging_dec10" }
 
 [dev-dependencies]
-blueprint-test-utils = { git = "https://github.com/tangle-network/gadget/" }
-cargo-tangle = { git = "https://github.com/tangle-network/gadget/" }
+blueprint-test-utils = { git = "https://github.com/tangle-network/gadget/", branch = "bls_debugging_dec10" }
+cargo-tangle = { git = "https://github.com/tangle-network/gadget/", branch = "bls_debugging_dec10" }
 #alloy-primitives = "0.7.2"
 
 [features]

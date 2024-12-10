@@ -27,6 +27,8 @@ pub struct BlsContext {
     pub network_backend: Arc<NetworkMultiplexer>,
     pub store: Arc<LocalDatabase<BlsState>>,
     pub identity: ecdsa::Pair,
+    #[call_id]
+    pub call_id: Option<u64>,
 }
 
 // Core context management implementation
@@ -53,6 +55,7 @@ impl BlsContext {
             store,
             identity,
             config,
+            call_id: None,
             network_backend: Arc::new(NetworkMultiplexer::new(gossip_handle)),
         })
     }
