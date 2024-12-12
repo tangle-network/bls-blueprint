@@ -24,7 +24,7 @@ gennaro-dkg = { version = "0.8.0", features = ["curve25519"]}
 
 [build-dependencies]
 blueprint-metadata = { git = "https://github.com/tangle-network/gadget.git" }
-blueprint-build-utils = { git = "https://github.com/tangle-network/gadget.git", branch = "donovan/build-improvements" }
+blueprint-build-utils = { git = "https://github.com/tangle-network/gadget.git" }
 
 [dev-dependencies]
 blueprint-test-utils = { git = "https://github.com/tangle-network/gadget.git" }
