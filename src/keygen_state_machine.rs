@@ -382,14 +382,13 @@ where
     M: Mpc<ProtocolMessage = Msg>,
 {
     let key_share = round5_broadcast_data.as_uncompressed_bytes().to_vec();
-    let mut my_broadcast = Msg5 {
+    let my_broadcast = Msg5 {
         source: i,
         data: key_share,
     };
     let broadcast_msg = Msg::Round5Broadcast(my_broadcast.clone());
     send_message::<M, Msg>(broadcast_msg.clone(), tx).await?;
 
-    my_broadcast.source += 1; // adjust for 1-indexed gennaro
     let round5_broadcasts = rounds
         .complete(round5)
         .await
