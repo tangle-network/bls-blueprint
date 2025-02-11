@@ -8,7 +8,7 @@ edition = "2021"
 manager = { Evm = "BlsBlueprint" }
 
 [dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["std", "macros", "tangle", "networking", "local-store", "round-based-compat", "networking-sp-core-ecdsa"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", branch = "dynamic-test-executor",features = ["std", "macros", "tangle", "networking", "local-store", "round-based-compat", "networking-sp-core-ecdsa"] }
 color-eyre = { version = "0.6", features = ["tracing-error", "color-spantrace"] }
 hex = { version = "0.4.3", default-features = false }
 serde = { version = "1.0.214", features = ["derive"] }
@@ -22,10 +22,10 @@ snowbridge-milagro-bls = "1.5.4"
 gennaro-dkg = { version = "0.8.0", features = ["curve25519"]}
 
 [build-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["build"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", branch = "dynamic-test-executor", features = ["build"] }
 
 [dev-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["std", "tangle", "testing"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", branch = "dynamic-test-executor", features = ["std", "tangle", "testing"] }
 color-eyre = { version = "0.6", features = ["capture-spantrace", "track-caller"] }
 tokio = { version = "1.43.0", features = ["test-util"] }
 
