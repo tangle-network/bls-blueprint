@@ -12,7 +12,7 @@ blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features
 color-eyre = { version = "0.6", features = ["tracing-error", "color-spantrace"] }
 hex = { version = "0.4.3", default-features = false }
 serde = { version = "1.0.214", features = ["derive"] }
-round-based = { version = "0.3.2", features = ["runtime-tokio", "derive"] }
+round-based = { version = "0.4.1", features = ["runtime-tokio", "derive"] }
 thiserror = "2.0.3"
 itertools = "0.13.0"
 
