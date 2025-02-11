@@ -3,6 +3,7 @@ use blueprint_sdk as sdk;
 use color_eyre::eyre::eyre;
 use color_eyre::{Report, Result};
 use sdk::clients::GadgetServicesClient;
+use sdk::config::GadgetConfiguration;
 use sdk::contexts::keystore::KeystoreContext;
 use sdk::contexts::tangle::TangleClientContext;
 use sdk::crypto::sp_core::SpSr25519;
@@ -29,7 +30,7 @@ const NETWORK_PROTOCOL: &str = "/bls/gennaro/1.0.0";
 #[derive(Clone, KeystoreContext, TangleClientContext, ServicesContext)]
 pub struct BlsContext {
     #[config]
-    pub config: sdk::config::GadgetConfiguration,
+    pub config: GadgetConfiguration,
     #[call_id]
     pub call_id: Option<u64>,
     pub network_backend: Arc<NetworkMultiplexer>,
@@ -45,7 +46,7 @@ impl BlsContext {
     /// Returns an error if:
     /// - Network initialization fails
     /// - Configuration is invalid
-    pub fn new(config: sdk::config::GadgetConfiguration) -> Result<Self> {
+    pub fn new(config: GadgetConfiguration) -> Result<Self> {
         let network_config = config
             .libp2p_network_config(NETWORK_PROTOCOL)
             .map_err(|err| eyre!("Failed to create network configuration: {err}"))?;
@@ -68,7 +69,7 @@ impl BlsContext {
 
     /// Returns a reference to the configuration
     #[inline]
-    pub fn config(&self) -> &sdk::config::StdGadgetConfiguration {
+    pub fn config(&self) -> &GadgetConfiguration {
         &self.config
     }
 
