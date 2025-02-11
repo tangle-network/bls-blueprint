@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
-
+use blueprint_sdk::crypto::hashing::sha2_256;
 use itertools::Itertools;
 use round_based::rounds_router::{simple_store::RoundInput, RoundsRouter};
 use round_based::MessageDestination;
 use round_based::{Delivery, Mpc, MpcParty, PartyIndex, ProtocolMessage};
 use serde::{Deserialize, Serialize};
 use snowbridge_milagro_bls::{PublicKey, SecretKey, Signature};
+use std::collections::BTreeMap;
 
 use crate::keygen_state_machine::{BlsState, HasRecipient};
 use crate::signing::SigningError;
@@ -60,7 +60,7 @@ where
         .map_err(|e| SigningError::MpcError(format!("Failed to create secret key: {e:?}")))?;
 
     // Step 1: Generate shares
-    let sign_input = gadget_sdk::compute_sha256_hash!(input_data_to_sign.as_ref());
+    let sign_input = sha2_256(input_data_to_sign.as_ref());
     let sig_share = Signature::new(&sign_input, &secret_key);
 
     let my_msg = Msg1 {

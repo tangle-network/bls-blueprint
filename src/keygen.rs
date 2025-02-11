@@ -1,15 +1,14 @@
 use crate::context::BlsContext;
-use gadget_sdk::{
-    event_listener::tangle::{
-        jobs::{services_post_processor, services_pre_processor},
-        TangleEventListener,
-    },
-    job,
-    network::round_based_compat::NetworkDeliveryWrapper,
-    tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled,
-    Error as GadgetError,
-};
-use sp_core::ecdsa::Public;
+use blueprint_sdk as sdk;
+use round_based::PartyIndex;
+use sdk::error::Error as GadgetError;
+use sdk::event_listeners::tangle::events::TangleEventListener;
+use sdk::event_listeners::tangle::services::{services_post_processor, services_pre_processor};
+use sdk::job;
+use sdk::logging;
+use sdk::networking::round_based_compat::NetworkDeliveryWrapper;
+use sdk::networking::GossipMsgPublicKey;
+use sdk::tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled;
 use std::collections::BTreeMap;
 
 #[job(
@@ -52,10 +51,10 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
 
-    let parties: BTreeMap<u16, Public> = operators
+    let parties: BTreeMap<u16, GossipMsgPublicKey> = operators
         .into_iter()
         .enumerate()
-        .map(|(j, (_, ecdsa))| (j as u16, ecdsa))
+        .map(|(j, (_, ecdsa))| (j as PartyIndex, GossipMsgPublicKey(ecdsa)))
         .collect();
 
     let n = parties.len() as u16;
@@ -64,7 +63,7 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
     let (meta_hash, deterministic_hash) =
         crate::compute_deterministic_hashes(n, blueprint_id, call_id, KEYGEN_SALT);
 
-    gadget_sdk::info!(
+    logging::info!(
         "Starting BLS Keygen for party {i}, n={n}, t={t}, eid={}",
         hex::encode(deterministic_hash)
     );
@@ -80,7 +79,7 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
 
     let output = crate::keygen_state_machine::bls_keygen_protocol(party, i, t, n, call_id).await?;
 
-    gadget_sdk::info!(
+    logging::info!(
         "Ending BLS Keygen for party {i}, n={n}, t={t}, eid={}",
         hex::encode(deterministic_hash)
     );
