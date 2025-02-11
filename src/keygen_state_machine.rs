@@ -17,7 +17,7 @@ use crate::keygen::KeygenError;
 
 type Group = bls12_381_plus::G1Projective;
 
-#[derive(Default, Serialize, Deserialize, Clone)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct BlsState {
     round1_broadcasts: BTreeMap<usize, Round1BroadcastData<Group>>,
     round1_p2p: BTreeMap<usize, Round1P2PData>,
@@ -42,7 +42,7 @@ impl BlsState {
 }
 
 #[derive(ProtocolMessage, Serialize, Deserialize, Clone)]
-pub enum Msg {
+pub enum KeygenMsg {
     Round1Broadcast(Msg1),
     Round1P2P(Msg1P2P),
     Round2Broadcast(Msg2),
@@ -85,6 +85,7 @@ pub struct Msg5 {
     data: Vec<u8>,
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn bls_keygen_protocol<M>(
     party: M,
     i: PartyIndex,
@@ -93,7 +94,7 @@ pub async fn bls_keygen_protocol<M>(
     call_id: u64,
 ) -> Result<BlsState, KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
     let MpcParty { delivery, .. } = party.into_party();
 
@@ -118,13 +119,11 @@ where
     let round3 = rounds.add_round(RoundInput::<Msg3>::broadcast(i, n));
     let round4 = rounds.add_round(RoundInput::<Msg4>::broadcast(i, n));
     let round5 = rounds.add_round(RoundInput::<Msg5>::broadcast(i, n));
-
     let mut rounds = rounds.listen(incomings);
 
     let (round1_broadcasts, round1_p2p_messages) = me
         .round1()
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-
     // Handle all rounds
     round1_broadcast::<M>(
         i,
@@ -144,7 +143,6 @@ where
         round1_p2p_msg,
     )
     .await?;
-
     let round2_broadcast_data = me
         .round2(state.round1_broadcasts.clone(), state.round1_p2p.clone())
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
@@ -161,6 +159,7 @@ where
     let round3_broadcast_data = me
         .round3(&state.round2_broadcasts)
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
+
     round3_broadcast::<M>(
         i,
         round3_broadcast_data,
@@ -207,22 +206,23 @@ where
     Ok(state)
 }
 
+#[tracing::instrument(skip_all)]
 async fn round1_broadcast<M>(
     i: u16,
     round1_broadcast_data: Round1BroadcastData<Group>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
     state: &mut BlsState,
-    rounds: &mut RoundsRouter<Msg, <<M as Mpc>::Delivery as Delivery<Msg>>::Receive>,
+    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
     round1: Round<RoundInput<Msg1>>,
 ) -> Result<(), KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
-    let broadcast_msg = Msg::Round1Broadcast(Msg1 {
+    let broadcast_msg = KeygenMsg::Round1Broadcast(Msg1 {
         source: i,
         data: round1_broadcast_data,
     });
-    send_message::<M, Msg>(broadcast_msg, tx).await?;
+    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
     let round1_broadcasts = rounds
         .complete(round1)
         .await
@@ -239,24 +239,25 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round1_p2p<M>(
     i: u16,
     round1_p2p_data: BTreeMap<usize, Round1P2PData>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
     state: &mut BlsState,
-    rounds: &mut RoundsRouter<Msg, <<M as Mpc>::Delivery as Delivery<Msg>>::Receive>,
+    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
     round1_p2p: Round<RoundInput<Msg1P2P>>,
 ) -> Result<(), KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
     for (j, round1_p2p_data) in round1_p2p_data {
-        let p2p_msg = Msg::Round1P2P(Msg1P2P {
+        let p2p_msg = KeygenMsg::Round1P2P(Msg1P2P {
             source: i,
             destination: (j - 1) as u16,
             data: round1_p2p_data,
         });
-        send_message::<M, Msg>(p2p_msg, tx).await?;
+        send_message::<M, KeygenMsg>(p2p_msg, tx).await?;
     }
 
     let round1_p2p = rounds
@@ -275,22 +276,23 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round2_broadcast<M>(
     i: u16,
     round2_broadcast_data: Round2EchoBroadcastData,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
     state: &mut BlsState,
-    rounds: &mut RoundsRouter<Msg, <<M as Mpc>::Delivery as Delivery<Msg>>::Receive>,
+    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
     round2: Round<RoundInput<Msg2>>,
 ) -> Result<(), KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
-    let broadcast_msg = Msg::Round2Broadcast(Msg2 {
+    let broadcast_msg = KeygenMsg::Round2Broadcast(Msg2 {
         source: i,
         data: round2_broadcast_data,
     });
-    send_message::<M, Msg>(broadcast_msg, tx).await?;
+    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
     let round2_broadcasts = rounds
         .complete(round2)
         .await
@@ -307,22 +309,23 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round3_broadcast<M>(
     i: u16,
     round3_broadcast_data: Round3BroadcastData<Group>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
     state: &mut BlsState,
-    rounds: &mut RoundsRouter<Msg, <<M as Mpc>::Delivery as Delivery<Msg>>::Receive>,
+    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
     round3: Round<RoundInput<Msg3>>,
 ) -> Result<(), KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
-    let broadcast_msg = Msg::Round3Broadcast(Msg3 {
+    let broadcast_msg = KeygenMsg::Round3Broadcast(Msg3 {
         source: i,
         data: round3_broadcast_data,
     });
-    send_message::<M, Msg>(broadcast_msg, tx).await?;
+    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
     let round3_broadcasts = rounds
         .complete(round3)
         .await
@@ -339,22 +342,23 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round4_broadcast<M>(
     i: u16,
     round4_broadcast_data: Round4EchoBroadcastData<Group>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
     state: &mut BlsState,
-    rounds: &mut RoundsRouter<Msg, <<M as Mpc>::Delivery as Delivery<Msg>>::Receive>,
+    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
     round4: Round<RoundInput<Msg4>>,
 ) -> Result<(), KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
-    let broadcast_msg = Msg::Round4Broadcast(Msg4 {
+    let broadcast_msg = KeygenMsg::Round4Broadcast(Msg4 {
         source: i,
         data: round4_broadcast_data,
     });
-    send_message::<M, Msg>(broadcast_msg, tx).await?;
+    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
     let round4_broadcasts = rounds
         .complete(round4)
         .await
@@ -371,24 +375,25 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round5_broadcast<M>(
     i: u16,
     round5_broadcast_data: snowbridge_milagro_bls::PublicKey,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
     state: &mut BlsState,
-    rounds: &mut RoundsRouter<Msg, <<M as Mpc>::Delivery as Delivery<Msg>>::Receive>,
+    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
     round5: Round<RoundInput<Msg5>>,
 ) -> Result<(), KeygenError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = KeygenMsg>,
 {
     let key_share = round5_broadcast_data.as_uncompressed_bytes().to_vec();
     let my_broadcast = Msg5 {
         source: i,
         data: key_share,
     };
-    let broadcast_msg = Msg::Round5Broadcast(my_broadcast.clone());
-    send_message::<M, Msg>(broadcast_msg.clone(), tx).await?;
+    let broadcast_msg = KeygenMsg::Round5Broadcast(my_broadcast.clone());
+    send_message::<M, KeygenMsg>(broadcast_msg.clone(), tx).await?;
 
     let round5_broadcasts = rounds
         .complete(round5)
@@ -438,19 +443,20 @@ pub trait HasRecipient {
     fn recipient(&self) -> MessageDestination;
 }
 
-impl HasRecipient for Msg {
+impl HasRecipient for KeygenMsg {
     fn recipient(&self) -> MessageDestination {
         match self {
-            Msg::Round1Broadcast(_) => MessageDestination::AllParties,
-            Msg::Round1P2P(msg) => MessageDestination::OneParty(msg.destination),
-            Msg::Round2Broadcast(_) => MessageDestination::AllParties,
-            Msg::Round3Broadcast(_) => MessageDestination::AllParties,
-            Msg::Round4Broadcast(_) => MessageDestination::AllParties,
-            Msg::Round5Broadcast(_) => MessageDestination::AllParties,
+            KeygenMsg::Round1Broadcast(_) => MessageDestination::AllParties,
+            KeygenMsg::Round1P2P(msg) => MessageDestination::OneParty(msg.destination),
+            KeygenMsg::Round2Broadcast(_) => MessageDestination::AllParties,
+            KeygenMsg::Round3Broadcast(_) => MessageDestination::AllParties,
+            KeygenMsg::Round4Broadcast(_) => MessageDestination::AllParties,
+            KeygenMsg::Round5Broadcast(_) => MessageDestination::AllParties,
         }
     }
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn send_message<M, Msg>(
     msg: Msg,
     tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,

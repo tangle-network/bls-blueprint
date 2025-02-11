@@ -1,5 +1,7 @@
 use crate::keygen_state_machine::BlsState;
 use blueprint_sdk as sdk;
+use blueprint_sdk::networking::service_handle::NetworkServiceHandle;
+use blueprint_sdk::networking::InstanceMsgPublicKey;
 use color_eyre::eyre::eyre;
 use color_eyre::{Report, Result};
 use sdk::clients::GadgetServicesClient;
@@ -11,18 +13,17 @@ use sdk::crypto::tangle_pair_signer::sp_core;
 use sdk::keystore::backends::Backend;
 use sdk::logging;
 use sdk::macros::contexts::{KeystoreContext, ServicesContext, TangleClientContext};
-use sdk::networking::networking::NetworkMultiplexer;
 use sdk::stores::local_database::LocalDatabase;
 use sdk::tangle_subxt;
 use sdk::tangle_subxt::tangle_testnet_runtime::api;
 use sp_core::ecdsa::Public;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tangle_subxt::subxt_core::utils::AccountId32;
 
 /// The network protocol version for the BLS service
-const NETWORK_PROTOCOL: &str = "/bls/gennaro/1.0.0";
+pub(crate) const NETWORK_PROTOCOL: &str = "bls/gennaro/1.0.0";
 
 /// BLS Service Context that holds all the necessary context for the service
 /// to run. This structure implements various traits for keystore, client, and service
@@ -33,7 +34,7 @@ pub struct BlsContext {
     pub config: GadgetConfiguration,
     #[call_id]
     pub call_id: Option<u64>,
-    pub network_backend: Arc<NetworkMultiplexer>,
+    pub network_backend: NetworkServiceHandle,
     pub store: Arc<LocalDatabase<BlsState>>,
     pub identity: sp_core::ecdsa::Pair,
 }
@@ -46,14 +47,20 @@ impl BlsContext {
     /// Returns an error if:
     /// - Network initialization fails
     /// - Configuration is invalid
-    pub fn new(config: GadgetConfiguration) -> Result<Self> {
-        let network_config = config
-            .libp2p_network_config(NETWORK_PROTOCOL)
-            .map_err(|err| eyre!("Failed to create network configuration: {err}"))?;
+    pub async fn new(config: GadgetConfiguration) -> Result<Self> {
+        let operator_keys: HashSet<InstanceMsgPublicKey> = config
+            .tangle_client()
+            .await?
+            .get_operators()
+            .await?
+            .iter()
+            .map(|(_, key)| InstanceMsgPublicKey(*key))
+            .collect();
 
-        let identity = network_config.secret_key.0.clone();
-        let gossip_handle = sdk::networking::setup::start_p2p_network(network_config)
-            .map_err(|err| eyre!("Failed to start the P2P network: {err}"))?;
+        let network_config = config.libp2p_network_config(NETWORK_PROTOCOL)?;
+        let identity = network_config.instance_key_pair.0.clone();
+
+        let network_backend = config.libp2p_start_network(network_config, operator_keys)?;
 
         let keystore_dir = PathBuf::from(&config.keystore_uri).join("bls.json");
         let store = Arc::new(LocalDatabase::open(keystore_dir));
@@ -63,7 +70,7 @@ impl BlsContext {
             identity,
             call_id: None,
             config,
-            network_backend: Arc::new(NetworkMultiplexer::new(gossip_handle)),
+            network_backend,
         })
     }
 

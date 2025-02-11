@@ -1,4 +1,5 @@
 use crate::context::BlsContext;
+use crate::keygen_state_machine::KeygenMsg;
 use blueprint_sdk as sdk;
 use round_based::PartyIndex;
 use sdk::error::Error as GadgetError;
@@ -6,10 +7,10 @@ use sdk::event_listeners::tangle::events::TangleEventListener;
 use sdk::event_listeners::tangle::services::{services_post_processor, services_pre_processor};
 use sdk::job;
 use sdk::logging;
-use sdk::networking::round_based_compat::NetworkDeliveryWrapper;
-use sdk::networking::GossipMsgPublicKey;
+use sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
+use sdk::networking::InstanceMsgPublicKey;
 use sdk::tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[job(
     id = 0,
@@ -44,19 +45,16 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
         .current_call_id()
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
-
     // Setup party information
     let (i, operators) = context
         .get_party_index_and_operators()
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
-
-    let parties: BTreeMap<u16, GossipMsgPublicKey> = operators
+    let parties: HashMap<u16, InstanceMsgPublicKey> = operators
         .into_iter()
         .enumerate()
-        .map(|(j, (_, ecdsa))| (j as PartyIndex, GossipMsgPublicKey(ecdsa)))
+        .map(|(j, (_, ecdsa))| (j as PartyIndex, InstanceMsgPublicKey(ecdsa)))
         .collect();
-
     let n = parties.len() as u16;
     let i = i as u16;
 
@@ -68,11 +66,11 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
         hex::encode(deterministic_hash)
     );
 
-    let network = NetworkDeliveryWrapper::new(
+    let network = RoundBasedNetworkAdapter::<KeygenMsg>::new(
         context.network_backend.clone(),
         i,
-        deterministic_hash,
         parties.clone(),
+        crate::context::NETWORK_PROTOCOL,
     );
 
     let party = round_based::party::MpcParty::connected(network);
