@@ -1,3 +1,4 @@
+use blueprint_sdk::logging;
 use gennaro_dkg::{
     Parameters, Participant, Round1BroadcastData, Round1P2PData, Round2EchoBroadcastData,
     Round3BroadcastData, Round4EchoBroadcastData, SecretParticipantImpl,
@@ -231,7 +232,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    gadget_sdk::info!(
+    logging::info!(
         "[BLS] Received {} messages from round 1",
         state.round1_broadcasts.len()
     );
@@ -267,7 +268,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    gadget_sdk::info!(
+    logging::info!(
         "[BLS] Received {} messages from round 1 P2P",
         state.round1_p2p.len()
     );
@@ -299,7 +300,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    gadget_sdk::info!(
+    logging::info!(
         "[BLS] Received {} messages from round 2",
         state.round2_broadcasts.len()
     );
@@ -331,7 +332,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    gadget_sdk::info!(
+    logging::info!(
         "[BLS] Received {} messages from round 3",
         state.round3_broadcasts.len()
     );
@@ -363,7 +364,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    gadget_sdk::info!(
+    logging::info!(
         "[BLS] Received {} messages from round 4",
         state.round4_broadcasts.len()
     );
@@ -406,7 +407,7 @@ where
                 received_pk_shares.insert(*id, pk);
             }
             Err(e) => {
-                gadget_sdk::warn!("Failed to deserialize public key: {e:?}");
+                logging::warn!("Failed to deserialize public key: {e:?}");
             }
         }
     }
@@ -426,7 +427,7 @@ where
     pk_agg.point.to_bytes(uncompressed_public_key, false);
     state.uncompressed_pk = Some(uncompressed_public_key.to_vec());
 
-    gadget_sdk::info!(
+    logging::info!(
         "[BLS] Received {} messages from round 5",
         state.round5_broadcasts.len()
     );

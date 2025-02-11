@@ -1,20 +1,21 @@
 use bls_blueprint::context::BlsContext;
+use blueprint_sdk as sdk;
+use blueprint_sdk::crypto::tangle_pair_signer::sp_core::Pair;
 use color_eyre::Result;
-use gadget_sdk::info;
-use gadget_sdk::runners::tangle::TangleConfig;
-use gadget_sdk::runners::BlueprintRunner;
-use sp_core::Pair;
+use sdk::logging;
+use sdk::runners::core::runner::BlueprintRunner;
+use sdk::runners::tangle::tangle::TangleConfig;
 
-#[gadget_sdk::main(env)]
+#[sdk::main(env)]
 async fn main() {
     let context = BlsContext::new(env.clone())?;
 
-    info!(
+    logging::info!(
         "Starting the Blueprint Runner for {} ...",
-        hex::encode(context.identity.public().as_ref())
+        hex::encode(context.identity.public())
     );
 
-    info!("~~~ Executing the BLS blueprint ~~~");
+    logging::info!("~~~ Executing the BLS blueprint ~~~");
 
     let tangle_config = TangleConfig::default();
     let keygen = bls_blueprint::keygen::KeygenEventHandler::new(&env, context.clone()).await?;
@@ -26,6 +27,6 @@ async fn main() {
         .run()
         .await?;
 
-    info!("Exiting...");
+    logging::info!("Exiting...");
     Ok(())
 }
