@@ -51,6 +51,7 @@ impl BlsContext {
             .libp2p_network_config(NETWORK_PROTOCOL)
             .map_err(|err| eyre!("Failed to create network configuration: {err}"))?;
 
+        logging::error!("{network_config:?}");
         let identity = network_config.secret_key.0.clone();
         let gossip_handle = sdk::networking::setup::start_p2p_network(network_config)
             .map_err(|err| eyre!("Failed to start the P2P network: {err}"))?;

@@ -103,6 +103,7 @@ where
     let i = NonZeroUsize::new((i + 1) as usize).expect("I > 0");
     let n = NonZeroUsize::new(n as usize).expect("N > 0");
     let t = NonZeroUsize::new(t as usize).expect("T > 0");
+    blueprint_sdk::logging::error!("{i},{n},{t}");
     let parameters = Parameters::new(t, n);
     let mut me =
         Participant::new(i, parameters).map_err(|e| KeygenError::MpcError(e.to_string()))?;
@@ -110,21 +111,28 @@ where
     let (i, _t, n) = (i.get() as u16, t.get() as u16, n.get() as u16);
     let i = i - 1;
 
+    blueprint_sdk::logging::error!("{i}");
     // Build rounds
     let mut rounds = RoundsRouter::builder();
+    blueprint_sdk::logging::error!("step 1");
     let round1 = rounds.add_round(RoundInput::<Msg1>::broadcast(i, n));
+    blueprint_sdk::logging::error!("step 2");
     let round1_p2p_msg = rounds.add_round(RoundInput::<Msg1P2P>::p2p(i, n));
+    blueprint_sdk::logging::error!("step 3");
     let round2 = rounds.add_round(RoundInput::<Msg2>::broadcast(i, n));
+    blueprint_sdk::logging::error!("step 4");
     let round3 = rounds.add_round(RoundInput::<Msg3>::broadcast(i, n));
+    blueprint_sdk::logging::error!("step 5");
     let round4 = rounds.add_round(RoundInput::<Msg4>::broadcast(i, n));
+    blueprint_sdk::logging::error!("step 6");
     let round5 = rounds.add_round(RoundInput::<Msg5>::broadcast(i, n));
-
+    blueprint_sdk::logging::error!("step 7");
     let mut rounds = rounds.listen(incomings);
-
+    blueprint_sdk::logging::error!("step 8");
     let (round1_broadcasts, round1_p2p_messages) = me
         .round1()
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-
+    blueprint_sdk::logging::error!("step 9");
     // Handle all rounds
     round1_broadcast::<M>(
         i,
@@ -135,6 +143,7 @@ where
         round1,
     )
     .await?;
+    blueprint_sdk::logging::error!("step 10");
     round1_p2p::<M>(
         i,
         round1_p2p_messages,
@@ -144,10 +153,11 @@ where
         round1_p2p_msg,
     )
     .await?;
-
+    blueprint_sdk::logging::error!("step 11");
     let round2_broadcast_data = me
         .round2(state.round1_broadcasts.clone(), state.round1_p2p.clone())
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
+    blueprint_sdk::logging::error!("step 12");
     round2_broadcast::<M>(
         i,
         round2_broadcast_data,
@@ -158,9 +168,12 @@ where
     )
     .await?;
 
+    blueprint_sdk::logging::error!("step 13");
     let round3_broadcast_data = me
         .round3(&state.round2_broadcasts)
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
+
+    blueprint_sdk::logging::error!("step 14");
     round3_broadcast::<M>(
         i,
         round3_broadcast_data,
@@ -222,11 +235,14 @@ where
         source: i,
         data: round1_broadcast_data,
     });
+    blueprint_sdk::logging::error!("send msg");
     send_message::<M, Msg>(broadcast_msg, tx).await?;
+    blueprint_sdk::logging::error!("complete");
     let round1_broadcasts = rounds
         .complete(round1)
         .await
         .map_err(|err| KeygenError::MpcError(err.to_string()))?;
+    blueprint_sdk::logging::error!("done");
     state.round1_broadcasts = round1_broadcasts
         .into_iter_indexed()
         .map(|r| ((r.2.source + 1) as _, r.2.data))

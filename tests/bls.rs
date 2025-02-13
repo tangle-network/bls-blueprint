@@ -2,12 +2,12 @@ use bls_blueprint::keygen::{KeygenEventHandler, KEYGEN_JOB_ID};
 use bls_blueprint::signing::{SignEventHandler, SIGN_JOB_ID};
 
 const N: usize = 3;
-#[expect(dead_code)]
-const T: usize = 2;
+const T: u16 = 2;
 
 use bls_blueprint::context::BlsContext;
 use blueprint_sdk as sdk;
 use blueprint_sdk::macros::ext::blueprint_serde::BoundedVec;
+use color_eyre::eyre;
 use sdk::logging;
 use sdk::testing::tempfile;
 use sdk::testing::utils::harness::TestHarness;
@@ -26,28 +26,40 @@ async fn test_blueprint() -> color_eyre::Result<()> {
     // Setup service
     let (mut test_env, service_id, _blueprint_id) = harness.setup_services::<N>(false).await?;
     test_env.initialize().await?;
+    test_env.add_job(|config| async move {
+        // Create blueprint-specific context
+        let blueprint_ctx = BlsContext::new(config.clone()).unwrap();
 
-    // Get the alice node
-    let handles = test_env.node_handles().await;
-    let alice_handle = handles[0].clone();
-    let alice_env = alice_handle.gadget_config().await;
+        KeygenEventHandler::new(&config, blueprint_ctx.clone()).await
+    }).await?;
+    // test_env.add_job(|config| async move {
+    //     // Create blueprint-specific context
+    //     let blueprint_ctx = BlsContext::new(config.clone()).unwrap();
+    //
+    //     SignEventHandler::new(&config, blueprint_ctx.clone()).await
+    // }).await?;
 
-    // Create blueprint-specific context
-    let blueprint_ctx = BlsContext::new(alice_env.clone())?;
-
-    // Create the event handlers
-    let keygen = KeygenEventHandler::new(&alice_env, blueprint_ctx.clone()).await?;
-    let sign = SignEventHandler::new(&alice_env, blueprint_ctx).await?;
-
-    alice_handle.add_job(keygen).await;
-    alice_handle.add_job(sign).await;
+    // // Get the alice node
+    // let handles = test_env.node_handles().await;
+    // let alice_handle = handles[0].clone();
+    // let alice_env = alice_handle.gadget_config().await;
+    //
+    // // Create blueprint-specific context
+    // let blueprint_ctx = BlsContext::new(alice_env.clone())?;
+    //
+    // // Create the event handlers
+    // let keygen = KeygenEventHandler::new(&alice_env, blueprint_ctx.clone()).await?;
+    // let sign = SignEventHandler::new(&alice_env, blueprint_ctx).await?;
+    //
+    // alice_handle.add_job(keygen).await;
+    // alice_handle.add_job(sign).await;
 
     test_env.start().await?;
 
     logging::info!("Submitting KEYGEN job {KEYGEN_JOB_ID} with service ID {service_id}");
 
     let job = harness
-        .submit_job(service_id, KEYGEN_JOB_ID, vec![InputValue::Uint64(5)])
+        .submit_job(service_id, KEYGEN_JOB_ID, vec![InputValue::Uint16(T)])
         .await?;
 
     let keygen_call_id = job.call_id;
