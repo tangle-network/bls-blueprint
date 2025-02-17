@@ -1,3 +1,4 @@
+use std::future;
 use bls_blueprint::keygen::{KeygenEventHandler, KEYGEN_JOB_ID};
 use bls_blueprint::signing::{SignEventHandler, SIGN_JOB_ID};
 
@@ -7,12 +8,33 @@ const T: u16 = 2;
 use bls_blueprint::context::BlsContext;
 use blueprint_sdk as sdk;
 use blueprint_sdk::macros::ext::blueprint_serde::BoundedVec;
+use blueprint_sdk::macros::ext::{async_trait, futures};
+use blueprint_sdk::macros::ext::async_trait::async_trait;
+use blueprint_sdk::runners::core::error::RunnerError;
+use blueprint_sdk::runners::core::runner::BackgroundService;
 use color_eyre::eyre;
 use sdk::logging;
 use sdk::testing::tempfile;
 use sdk::testing::utils::harness::TestHarness;
 use sdk::testing::utils::tangle::InputValue;
 use sdk::testing::utils::tangle::TangleTestHarness;
+use tokio::sync::oneshot;
+use tokio::sync::oneshot::Receiver;
+
+#[derive(Clone)]
+struct MockBackgroundService;
+
+#[async_trait]
+impl BackgroundService for MockBackgroundService {
+    async fn start(&self) -> Result<Receiver<Result<(), RunnerError>>, RunnerError> {
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            future::pending::<()>().await;
+            let _ = tx.send(Ok(()));
+        });
+        Ok(rx)
+    }
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_blueprint() -> color_eyre::Result<()> {
@@ -26,33 +48,39 @@ async fn test_blueprint() -> color_eyre::Result<()> {
     // Setup service
     let (mut test_env, service_id, _blueprint_id) = harness.setup_services::<N>(false).await?;
     test_env.initialize().await?;
-    test_env.add_job(|config| async move {
-        // Create blueprint-specific context
-        let blueprint_ctx = BlsContext::new(config.clone()).unwrap();
-
-        KeygenEventHandler::new(&config, blueprint_ctx.clone()).await
-    }).await?;
     // test_env.add_job(|config| async move {
     //     // Create blueprint-specific context
     //     let blueprint_ctx = BlsContext::new(config.clone()).unwrap();
     //
-    //     SignEventHandler::new(&config, blueprint_ctx.clone()).await
+    //     KeygenEventHandler::new(&config, blueprint_ctx.clone()).await
     // }).await?;
+    // // test_env.add_job(|config| async move {
+    // //     // Create blueprint-specific context
+    // //     let blueprint_ctx = BlsContext::new(config.clone()).unwrap();
+    // //
+    // //     SignEventHandler::new(&config, blueprint_ctx.clone()).await
+    // // }).await?;
 
-    // // Get the alice node
-    // let handles = test_env.node_handles().await;
-    // let alice_handle = handles[0].clone();
-    // let alice_env = alice_handle.gadget_config().await;
-    //
-    // // Create blueprint-specific context
-    // let blueprint_ctx = BlsContext::new(alice_env.clone())?;
-    //
-    // // Create the event handlers
-    // let keygen = KeygenEventHandler::new(&alice_env, blueprint_ctx.clone()).await?;
-    // let sign = SignEventHandler::new(&alice_env, blueprint_ctx).await?;
-    //
-    // alice_handle.add_job(keygen).await;
-    // alice_handle.add_job(sign).await;
+    // Get the alice node
+    let handles = test_env.node_handles().await;
+    for handle in &handles[1..] {
+        let blueprint_ctx = BlsContext::new(handle.gadget_config().await)?;
+        std::mem::forget(blueprint_ctx);
+        handle.add_background_service(MockBackgroundService).await;
+    }
+
+    let alice_handle = handles[0].clone();
+    let alice_env = alice_handle.gadget_config().await;
+
+    // Create blueprint-specific context
+    let blueprint_ctx = BlsContext::new(alice_env.clone())?;
+
+    // Create the event handlers
+    let keygen = KeygenEventHandler::new(&alice_env, blueprint_ctx.clone()).await?;
+    let sign = SignEventHandler::new(&alice_env, blueprint_ctx).await?;
+
+    alice_handle.add_job(keygen).await;
+    alice_handle.add_job(sign).await;
 
     test_env.start().await?;
 

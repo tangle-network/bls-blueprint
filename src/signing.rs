@@ -30,6 +30,8 @@ impl From<SigningError> for GadgetError {
     }
 }
 
+const ROUNDS: usize = 1;
+
 #[job(
     id = 1,
     params(keygen_call_id, message),
@@ -101,7 +103,7 @@ pub async fn sign(
         hex::encode(deterministic_hash)
     );
 
-    let network = NetworkDeliveryWrapper::new(
+    let network = NetworkDeliveryWrapper::new::<ROUNDS>(
         context.network_backend.clone(),
         i,
         deterministic_hash,
