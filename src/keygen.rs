@@ -11,6 +11,8 @@ use sdk::networking::GossipMsgPublicKey;
 use sdk::tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled;
 use std::collections::BTreeMap;
 
+const ROUNDS: usize = 5;
+
 #[job(
     id = 0,
     params(t),
@@ -44,19 +46,16 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
         .current_call_id()
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
-
     // Setup party information
     let (i, operators) = context
         .get_party_index_and_operators()
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
-
     let parties: BTreeMap<u16, GossipMsgPublicKey> = operators
         .into_iter()
         .enumerate()
         .map(|(j, (_, ecdsa))| (j as PartyIndex, GossipMsgPublicKey(ecdsa)))
         .collect();
-
     let n = parties.len() as u16;
     let i = i as u16;
 
@@ -68,7 +67,7 @@ pub async fn keygen(t: u16, context: BlsContext) -> Result<Vec<u8>, GadgetError>
         hex::encode(deterministic_hash)
     );
 
-    let network = NetworkDeliveryWrapper::new(
+    let network = NetworkDeliveryWrapper::new::<ROUNDS>(
         context.network_backend.clone(),
         i,
         deterministic_hash,

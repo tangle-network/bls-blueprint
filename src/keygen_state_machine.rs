@@ -17,7 +17,7 @@ use crate::keygen::KeygenError;
 
 type Group = bls12_381_plus::G1Projective;
 
-#[derive(Default, Serialize, Deserialize, Clone)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct BlsState {
     round1_broadcasts: BTreeMap<usize, Round1BroadcastData<Group>>,
     round1_p2p: BTreeMap<usize, Round1P2PData>,
@@ -85,6 +85,7 @@ pub struct Msg5 {
     data: Vec<u8>,
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn bls_keygen_protocol<M>(
     party: M,
     i: PartyIndex,
@@ -118,13 +119,11 @@ where
     let round3 = rounds.add_round(RoundInput::<Msg3>::broadcast(i, n));
     let round4 = rounds.add_round(RoundInput::<Msg4>::broadcast(i, n));
     let round5 = rounds.add_round(RoundInput::<Msg5>::broadcast(i, n));
-
     let mut rounds = rounds.listen(incomings);
 
     let (round1_broadcasts, round1_p2p_messages) = me
         .round1()
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-
     // Handle all rounds
     round1_broadcast::<M>(
         i,
@@ -144,7 +143,6 @@ where
         round1_p2p_msg,
     )
     .await?;
-
     let round2_broadcast_data = me
         .round2(state.round1_broadcasts.clone(), state.round1_p2p.clone())
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
@@ -161,6 +159,7 @@ where
     let round3_broadcast_data = me
         .round3(&state.round2_broadcasts)
         .map_err(|e| KeygenError::MpcError(e.to_string()))?;
+
     round3_broadcast::<M>(
         i,
         round3_broadcast_data,
@@ -207,6 +206,7 @@ where
     Ok(state)
 }
 
+#[tracing::instrument(skip_all)]
 async fn round1_broadcast<M>(
     i: u16,
     round1_broadcast_data: Round1BroadcastData<Group>,
@@ -223,6 +223,7 @@ where
         data: round1_broadcast_data,
     });
     send_message::<M, Msg>(broadcast_msg, tx).await?;
+    tracing::error!("COMPLETING");
     let round1_broadcasts = rounds
         .complete(round1)
         .await
@@ -231,6 +232,7 @@ where
         .into_iter_indexed()
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
+    tracing::error!("COMPLETED");
 
     logging::info!(
         "[BLS] Received {} messages from round 1",
@@ -239,6 +241,7 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round1_p2p<M>(
     i: u16,
     round1_p2p_data: BTreeMap<usize, Round1P2PData>,
@@ -250,15 +253,17 @@ async fn round1_p2p<M>(
 where
     M: Mpc<ProtocolMessage = Msg>,
 {
-    for (j, round1_p2p_data) in round1_p2p_data {
+    tracing::error!("ALL RECIPIENTS: {:?}, ME={i}", round1_p2p_data.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+    for (destination, round1_p2p_data) in round1_p2p_data {
         let p2p_msg = Msg::Round1P2P(Msg1P2P {
             source: i,
-            destination: (j - 1) as u16,
+            destination: destination as u16,
             data: round1_p2p_data,
         });
         send_message::<M, Msg>(p2p_msg, tx).await?;
     }
 
+    tracing::error!("ALL MESSAGES SENT");
     let round1_p2p = rounds
         .complete(round1_p2p)
         .await
@@ -275,6 +280,7 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round2_broadcast<M>(
     i: u16,
     round2_broadcast_data: Round2EchoBroadcastData,
@@ -307,6 +313,7 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round3_broadcast<M>(
     i: u16,
     round3_broadcast_data: Round3BroadcastData<Group>,
@@ -339,6 +346,7 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round4_broadcast<M>(
     i: u16,
     round4_broadcast_data: Round4EchoBroadcastData<Group>,
@@ -371,6 +379,7 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn round5_broadcast<M>(
     i: u16,
     round5_broadcast_data: snowbridge_milagro_bls::PublicKey,
@@ -451,6 +460,7 @@ impl HasRecipient for Msg {
     }
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn send_message<M, Msg>(
     msg: Msg,
     tx: &mut <<M as Mpc>::Delivery as Delivery<Msg>>::Send,
