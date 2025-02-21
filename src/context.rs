@@ -53,8 +53,8 @@ impl BlsContext {
             .await?
             .get_operators()
             .await?
-            .iter()
-            .map(|(_, key)| InstanceMsgPublicKey(*key))
+            .values()
+            .map(|key| InstanceMsgPublicKey(*key))
             .collect();
 
         let network_config = config.libp2p_network_config(NETWORK_PROTOCOL)?;
