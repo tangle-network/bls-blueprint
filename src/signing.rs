@@ -1,14 +1,15 @@
 use crate::context::BlsContext;
+use crate::signing_state_machine::SigningMsg;
 use blueprint_sdk as sdk;
 use sdk::error::Error as GadgetError;
 use sdk::event_listeners::tangle::events::TangleEventListener;
 use sdk::event_listeners::tangle::services::{services_post_processor, services_pre_processor};
 use sdk::job;
 use sdk::logging;
-use sdk::networking::round_based_compat::NetworkDeliveryWrapper;
-use sdk::networking::GossipMsgPublicKey;
+use sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
+use sdk::networking::InstanceMsgPublicKey;
 use sdk::tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -74,10 +75,10 @@ pub async fn sign(
         .await
         .map_err(|e| SigningError::ContextError(e.to_string()))?;
 
-    let parties: BTreeMap<u16, GossipMsgPublicKey> = operators
+    let parties: HashMap<u16, InstanceMsgPublicKey> = operators
         .into_iter()
         .enumerate()
-        .map(|(j, (_, ecdsa))| (j as u16, GossipMsgPublicKey(ecdsa)))
+        .map(|(j, (_, ecdsa))| (j as u16, InstanceMsgPublicKey(ecdsa)))
         .collect();
 
     let n = parties.len() as u16;
@@ -101,11 +102,11 @@ pub async fn sign(
         hex::encode(deterministic_hash)
     );
 
-    let network = NetworkDeliveryWrapper::new(
+    let network = RoundBasedNetworkAdapter::<SigningMsg>::new(
         context.network_backend.clone(),
         i,
-        deterministic_hash,
         parties.clone(),
+        crate::context::NETWORK_PROTOCOL,
     );
 
     let party = round_based::party::MpcParty::connected(network);

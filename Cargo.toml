@@ -8,13 +8,22 @@ edition = "2021"
 manager = { Evm = "BlsBlueprint" }
 
 [dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["std", "macros", "tangle", "networking", "local-store", "round-based-compat", "networking-sp-core-ecdsa"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = [
+    "std",
+    "macros",
+    "tangle",
+    "networking",
+    "local-store",
+    "round-based-compat",
+    "networking-sp-core-ecdsa"
+] }
 color-eyre = { version = "0.6", features = ["tracing-error", "color-spantrace"] }
 hex = { version = "0.4.3", default-features = false }
 serde = { version = "1.0.214", features = ["derive"] }
-round-based = { version = "0.3.2", features = ["runtime-tokio", "derive"] }
+round-based = { version = "0.4.1", features = ["runtime-tokio", "derive"] }
 thiserror = "2.0.3"
 itertools = "0.13.0"
+tracing = "0.1.41"
 
 # MPC specific deps
 bls12_381_plus = "0.8.18"

@@ -18,7 +18,7 @@ pub struct BlsSigningState {
 }
 
 #[derive(ProtocolMessage, Serialize, Deserialize, Clone)]
-pub enum Msg {
+pub enum SigningMsg {
     Round1Broadcast(Msg1),
 }
 
@@ -37,7 +37,7 @@ pub async fn bls_signing_protocol<M, T>(
     input_data_to_sign: T,
 ) -> Result<BlsSigningState, SigningError>
 where
-    M: Mpc<ProtocolMessage = Msg>,
+    M: Mpc<ProtocolMessage = SigningMsg>,
     T: AsRef<[u8]>,
 {
     let MpcParty { delivery, .. } = party.into_party();
@@ -69,9 +69,9 @@ where
         body: sig_share.as_bytes().to_vec(),
     };
     // Step 2: Broadcast shares
-    let msg = Msg::Round1Broadcast(my_msg.clone());
+    let msg = SigningMsg::Round1Broadcast(my_msg.clone());
 
-    send_message::<M, Msg>(msg, &mut outgoings)
+    send_message::<M, SigningMsg>(msg, &mut outgoings)
         .await
         .map_err(|e| SigningError::MpcError(e.to_string()))?;
 
@@ -129,10 +129,10 @@ where
     Ok(signing_state)
 }
 
-impl HasRecipient for Msg {
+impl HasRecipient for SigningMsg {
     fn recipient(&self) -> MessageDestination {
         match self {
-            Msg::Round1Broadcast(..) => MessageDestination::AllParties,
+            SigningMsg::Round1Broadcast(..) => MessageDestination::AllParties,
         }
     }
 }

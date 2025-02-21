@@ -8,7 +8,7 @@ use sdk::runners::tangle::tangle::TangleConfig;
 
 #[sdk::main(env)]
 async fn main() {
-    let context = BlsContext::new(env.clone())?;
+    let context = BlsContext::new(env.clone()).await?;
 
     logging::info!(
         "Starting the Blueprint Runner for {} ...",
