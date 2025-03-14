@@ -1,12 +1,12 @@
-use blueprint_sdk::logging;
+use blueprint_sdk as sdk;
 use gennaro_dkg::{
     Parameters, Participant, Round1BroadcastData, Round1P2PData, Round2EchoBroadcastData,
     Round3BroadcastData, Round4EchoBroadcastData, SecretParticipantImpl,
 };
 use itertools::Itertools;
-use round_based::rounds_router::{simple_store::RoundInput, Round, RoundsRouter};
 use round_based::MessageDestination;
 use round_based::SinkExt;
+use round_based::rounds_router::{Round, RoundsRouter, simple_store::RoundInput};
 use round_based::{Delivery, Mpc, MpcParty, PartyIndex, ProtocolMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -232,7 +232,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    logging::info!(
+    sdk::info!(
         "[BLS] Received {} messages from round 1",
         state.round1_broadcasts.len()
     );
@@ -269,7 +269,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    logging::info!(
+    sdk::info!(
         "[BLS] Received {} messages from round 1 P2P",
         state.round1_p2p.len()
     );
@@ -302,7 +302,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    logging::info!(
+    sdk::info!(
         "[BLS] Received {} messages from round 2",
         state.round2_broadcasts.len()
     );
@@ -335,7 +335,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    logging::info!(
+    sdk::info!(
         "[BLS] Received {} messages from round 3",
         state.round3_broadcasts.len()
     );
@@ -368,7 +368,7 @@ where
         .map(|r| ((r.2.source + 1) as _, r.2.data))
         .collect();
 
-    logging::info!(
+    sdk::info!(
         "[BLS] Received {} messages from round 4",
         state.round4_broadcasts.len()
     );
@@ -412,7 +412,7 @@ where
                 received_pk_shares.insert(*id, pk);
             }
             Err(e) => {
-                logging::warn!("Failed to deserialize public key: {e:?}");
+                sdk::warn!("Failed to deserialize public key: {e:?}");
             }
         }
     }
@@ -432,7 +432,7 @@ where
     pk_agg.point.to_bytes(uncompressed_public_key, false);
     state.uncompressed_pk = Some(uncompressed_public_key.to_vec());
 
-    logging::info!(
+    sdk::info!(
         "[BLS] Received {} messages from round 5",
         state.round5_broadcasts.len()
     );

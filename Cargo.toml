@@ -1,43 +1,76 @@
 [package]
-name = "bls-blueprint"
-version = "0.1.1"
-description = "A BLS Blueprint that can run keygen and signing jobs on demand from the Tangle network"
-edition = "2021"
-
-[package.metadata.blueprint]
-manager = { Evm = "BlsBlueprint" }
+name = "bls-blueprint-lib"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+categories.workspace = true
+keywords.workspace = true
 
 [dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = [
+blueprint-sdk = { workspace = true, features = [
     "std",
     "macros",
     "tangle",
     "networking",
     "local-store",
     "round-based-compat",
-    "networking-sp-core-ecdsa"
 ] }
-color-eyre = { version = "0.6", features = ["tracing-error", "color-spantrace"] }
+color-eyre = { workspace = true, features = ["tracing-error", "color-spantrace"] }
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+round-based = { workspace = true, features = ["runtime-tokio", "derive"] }
+thiserror.workspace = true
+itertools.workspace = true
+tracing.workspace = true
+
+# MPC specific deps
+bls12_381_plus.workspace = true
+snowbridge-milagro-bls.workspace = true
+gennaro-dkg = { workspace = true, features = ["curve25519"]}
+crossbeam-channel.workspace = true
+
+[dev-dependencies]
+blueprint-sdk = { workspace = true, features = ["std", "tangle", "testing"] }
+color-eyre = { workspace = true, features = ["capture-spantrace", "track-caller"] }
+tokio = { workspace = true, features = ["test-util"] }
+
+[workspace]
+members = ["bls-bin", "."]
+
+[workspace.package]
+version = "0.1.1"
+edition = "2024"
+description = "A BLS Blueprint that can run keygen and signing jobs on demand from the Tangle network"
+authors = ["Webb Technologies Inc."]
+license = "MIT OR Apache-2.0"
+homepage = "https://tangle.tools"
+repository = "https://github.com/tangle-network/bls-blueprint"
+readme = "README.md"
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+keywords = ["tangle", "blueprint", "avs"]
+
+[workspace.dependencies]
+# Our blueprint
+bls-blueprint-lib = { path = "." }
+
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git" }
+color-eyre = "0.6"
 hex = { version = "0.4.3", default-features = false }
-serde = { version = "1.0.214", features = ["derive"] }
-round-based = { version = "0.4.1", features = ["runtime-tokio", "derive"] }
+serde = "1.0.214"
+round-based = "0.4.1"
 thiserror = "2.0.3"
 itertools = "0.13.0"
 tracing = "0.1.41"
+tokio = "1.43.0"
+tracing-subscriber = "0.3.19"
+crossbeam-channel = "0.5.14"
 
 # MPC specific deps
 bls12_381_plus = "0.8.18"
 snowbridge-milagro-bls = "1.5.4"
-gennaro-dkg = { version = "0.8.0", features = ["curve25519"]}
+gennaro-dkg = "0.8.0"
 
-[build-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["build"] }
-
-[dev-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["std", "tangle", "testing"] }
-color-eyre = { version = "0.6", features = ["capture-spantrace", "track-caller"] }
-tokio = { version = "1.43.0", features = ["test-util"] }
-
-[features]
-default = ["std"]
-std = []

@@ -1,13 +1,17 @@
-use bls_blueprint::context::BlsContext;
-use bls_blueprint::keygen::{KeygenEventHandler, KEYGEN_JOB_ID};
-use bls_blueprint::signing::{SignEventHandler, SIGN_JOB_ID};
+use bls_blueprint_lib as blueprint;
+use blueprint::context::BlsContext;
+use blueprint::keygen::KEYGEN_JOB_ID;
+use blueprint::signing::SIGN_JOB_ID;
 use blueprint_sdk as sdk;
-use blueprint_sdk::macros::ext::blueprint_serde::BoundedVec;
-use sdk::logging;
+use sdk::Job;
+use sdk::serde::BoundedVec;
+use sdk::tangle::layers::TangleLayer;
+use sdk::tangle::metadata::macros::ext::FieldType;
 use sdk::testing::tempfile;
-use sdk::testing::utils::harness::TestHarness;
+use sdk::testing::utils::setup_log;
 use sdk::testing::utils::tangle::InputValue;
 use sdk::testing::utils::tangle::TangleTestHarness;
+use tokio::time::timeout;
 
 const N: usize = 3;
 const T: u16 = 2;
@@ -15,9 +19,9 @@ const T: u16 = 2;
 #[tokio::test(flavor = "multi_thread")]
 async fn test_blueprint() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    logging::setup_log();
+    setup_log();
 
-    logging::info!("Running BLS blueprint test");
+    sdk::info!("Running BLS blueprint test");
     let tmp_dir = tempfile::TempDir::new()?;
     let harness = TangleTestHarness::setup(tmp_dir).await?;
 
@@ -25,35 +29,36 @@ async fn test_blueprint() -> color_eyre::Result<()> {
     let (mut test_env, service_id, _blueprint_id) = harness.setup_services::<N>(false).await?;
     test_env.initialize().await?;
 
-    let handles = test_env.node_handles().await;
-    for handle in handles {
+    test_env.add_job(blueprint::keygen.layer(TangleLayer)).await;
+    test_env.add_job(blueprint::sign.layer(TangleLayer)).await;
+
+    let mut contexts = Vec::new();
+    for handle in test_env.node_handles().await {
         let config = handle.gadget_config().await;
         let blueprint_ctx = BlsContext::new(config.clone()).await?;
-
-        let keygen_job = KeygenEventHandler::new(&config, blueprint_ctx.clone()).await?;
-        let signing_job = SignEventHandler::new(&config, blueprint_ctx.clone()).await?;
-        handle.add_job(keygen_job).await;
-        handle.add_job(signing_job).await;
+        contexts.push(blueprint_ctx);
     }
 
-    // Wait around for handshakes...
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    test_env.start_with_contexts(contexts).await?;
 
-    test_env.start().await?;
-
-    logging::info!("Submitting KEYGEN job {KEYGEN_JOB_ID} with service ID {service_id}");
+    sdk::info!("Submitting KEYGEN job {KEYGEN_JOB_ID} with service ID {service_id}");
 
     let job = harness
         .submit_job(service_id, KEYGEN_JOB_ID, vec![InputValue::Uint16(T)])
         .await?;
 
     let keygen_call_id = job.call_id;
-    logging::info!(
+    sdk::info!(
         "Submitted KEYGEN job {KEYGEN_JOB_ID} with service ID {service_id} has call id {keygen_call_id}"
     );
 
     // Execute job and verify result
-    let results = harness.wait_for_job_execution(service_id, job).await?;
+    let test_timeout = std::time::Duration::from_secs(60);
+    let results = timeout(
+        test_timeout,
+        harness.wait_for_job_execution(service_id, job),
+    )
+    .await??;
     assert_eq!(results.service_id, service_id);
 
     let expected_outputs = vec![];
@@ -68,20 +73,23 @@ async fn test_blueprint() -> color_eyre::Result<()> {
             assert_eq!(result, expected);
         }
 
-        logging::info!("Keygen job completed successfully! Moving on to signing ...");
+        sdk::info!("Keygen job completed successfully! Moving on to signing ...");
     } else {
-        logging::info!("No expected outputs specified, skipping keygen verification");
+        sdk::info!("No expected outputs specified, skipping keygen verification");
     }
 
-    logging::info!("Submitting SIGNING job {SIGN_JOB_ID} with service ID {service_id}");
+    sdk::info!("Submitting SIGNING job {SIGN_JOB_ID} with service ID {service_id}");
 
     let job_args = vec![
         InputValue::Uint64(keygen_call_id),
-        InputValue::List(BoundedVec(vec![
-            InputValue::Uint8(1),
-            InputValue::Uint8(2),
-            InputValue::Uint8(3),
-        ])),
+        InputValue::List(
+            FieldType::Uint8,
+            BoundedVec(vec![
+                InputValue::Uint8(1),
+                InputValue::Uint8(2),
+                InputValue::Uint8(3),
+            ]),
+        ),
     ];
 
     let job = harness
@@ -89,7 +97,7 @@ async fn test_blueprint() -> color_eyre::Result<()> {
         .await?;
 
     let signing_call_id = job.call_id;
-    logging::info!(
+    sdk::info!(
         "Submitted SIGNING job {SIGN_JOB_ID} with service ID {service_id} has call id {signing_call_id}",
     );
 
@@ -108,7 +116,7 @@ async fn test_blueprint() -> color_eyre::Result<()> {
             assert_eq!(result, expected);
         }
     } else {
-        logging::info!("No expected outputs specified, skipping signing verification");
+        sdk::info!("No expected outputs specified, skipping signing verification");
     }
 
     Ok(())
