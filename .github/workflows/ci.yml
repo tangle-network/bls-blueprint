@@ -11,9 +11,6 @@ concurrency:
   group: rust-validation-${{ github.head_ref }}
   cancel-in-progress: true
 
-env:
-  RUST_LOG: "gadget=trace"
-
 jobs:
   fmt:
     name: Rustfmt
@@ -100,4 +97,4 @@ jobs:
       - uses: taiki-e/github-actions/free-device-space@main
 
       - name: tests
-        run: cargo test -- --test-threads=1
+        run: cargo test

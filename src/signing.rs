@@ -1,14 +1,12 @@
 use crate::context::BlsContext;
 use crate::signing_state_machine::SigningMsg;
 use blueprint_sdk as sdk;
-use sdk::error::Error as GadgetError;
-use sdk::event_listeners::tangle::events::TangleEventListener;
-use sdk::event_listeners::tangle::services::{services_post_processor, services_pre_processor};
-use sdk::job;
-use sdk::logging;
+use sdk::contexts::tangle::TangleClientContext;
+use sdk::crypto::sp_core::{SpEcdsa, SpEcdsaPublic};
+use sdk::extract::Context;
+use sdk::networking::discovery::peers::VerificationIdentifierKey;
 use sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
-use sdk::networking::InstanceMsgPublicKey;
-use sdk::tangle_subxt::tangle_testnet_runtime::api::services::events::JobCalled;
+use sdk::tangle::extract::{List, TangleArgs2, TangleResult};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -25,21 +23,14 @@ pub enum SigningError {
 /// Configuration constants for the BLS signing process
 const SIGNING_SALT: &str = "bls-signing";
 
-impl From<SigningError> for GadgetError {
+impl From<SigningError> for sdk::Error {
     fn from(err: SigningError) -> Self {
-        GadgetError::Other(err.to_string())
+        sdk::Error::Other(err.to_string())
     }
 }
 
-#[job(
-    id = 1,
-    params(keygen_call_id, message),
-    event_listener(
-        listener = TangleEventListener<BlsContext, JobCalled>,
-        pre_processor = services_pre_processor,
-        post_processor = services_post_processor,
-    ),
-)]
+pub const SIGN_JOB_ID: u8 = 1;
+
 /// Signs a message using the BLS protocol with a previously generated key
 ///
 /// # Arguments
@@ -55,30 +46,31 @@ impl From<SigningError> for GadgetError {
 /// - Failed to retrieve the key entry
 /// - Signing process failed
 pub async fn sign(
-    keygen_call_id: u64,
-    message: Vec<u8>,
-    context: BlsContext,
-) -> Result<Vec<u8>, GadgetError> {
+    Context(context): Context<BlsContext>,
+    TangleArgs2(keygen_call_id, List(message)): TangleArgs2<u64, List<u8>>,
+) -> Result<TangleResult<List<u8>>, sdk::Error> {
     // Get configuration and compute deterministic values
     let blueprint_id = context
         .blueprint_id()
         .map_err(|e| SigningError::ContextError(e.to_string()))?;
 
-    let call_id = context
-        .current_call_id()
-        .await
-        .map_err(|e| SigningError::ContextError(e.to_string()))?;
-
     // Setup party information
     let (i, operators) = context
+        .tangle_client()
+        .await?
         .get_party_index_and_operators()
         .await
         .map_err(|e| SigningError::ContextError(e.to_string()))?;
 
-    let parties: HashMap<u16, InstanceMsgPublicKey> = operators
+    let parties: HashMap<u16, VerificationIdentifierKey<SpEcdsa>> = operators
         .into_iter()
         .enumerate()
-        .map(|(j, (_, ecdsa))| (j as u16, InstanceMsgPublicKey(ecdsa)))
+        .map(|(j, (_, ecdsa))| {
+            (
+                j as u16,
+                VerificationIdentifierKey::InstancePublicKey(SpEcdsaPublic(ecdsa)),
+            )
+        })
         .collect();
 
     let n = parties.len() as u16;
@@ -97,12 +89,12 @@ pub async fn sign(
 
     let t = state.t;
 
-    logging::info!(
+    sdk::info!(
         "Starting BLS Signing for party {i}, n={n}, t={t}, eid={}",
         hex::encode(deterministic_hash)
     );
 
-    let network = RoundBasedNetworkAdapter::<SigningMsg>::new(
+    let network = RoundBasedNetworkAdapter::<SigningMsg, SpEcdsa>::new(
         context.network_backend.clone(),
         i,
         parties.clone(),
@@ -115,7 +107,7 @@ pub async fn sign(
         crate::signing_state_machine::bls_signing_protocol(party, i, n, &mut state, message)
             .await?;
 
-    logging::info!(
+    sdk::info!(
         "Ending BLS Signing for party {i}, n={n}, t={t}, eid={}",
         hex::encode(deterministic_hash)
     );
@@ -125,5 +117,5 @@ pub async fn sign(
         .ok_or_else(|| SigningError::KeyRetrievalError("Signature not found".to_string()))?;
 
     // For now, return a placeholder
-    Ok(signature)
+    Ok(TangleResult(signature.into()))
 }

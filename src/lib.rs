@@ -1,7 +1,10 @@
 pub mod context;
+pub use context::BlsContext;
 pub mod keygen;
+pub use keygen::keygen;
 pub(crate) mod keygen_state_machine;
 pub mod signing;
+pub use signing::sign;
 pub(crate) mod signing_state_machine;
 
 use blueprint_sdk as sdk;
