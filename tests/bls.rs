@@ -3,8 +3,8 @@ use blueprint::context::BlsContext;
 use blueprint::keygen::KEYGEN_JOB_ID;
 use blueprint::signing::SIGN_JOB_ID;
 use blueprint_sdk as sdk;
+use blueprint_sdk::tangle::serde::BoundedVec;
 use sdk::Job;
-use sdk::serde::BoundedVec;
 use sdk::tangle::layers::TangleLayer;
 use sdk::tangle::metadata::macros::ext::FieldType;
 use sdk::testing::tempfile;
@@ -34,7 +34,7 @@ async fn test_blueprint() -> color_eyre::Result<()> {
 
     let mut contexts = Vec::new();
     for handle in test_env.node_handles().await {
-        let config = handle.gadget_config().await;
+        let config = handle.blueprint_config().await;
         let blueprint_ctx = BlsContext::new(config.clone()).await?;
         contexts.push(blueprint_ctx);
     }

@@ -2,9 +2,8 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
   push:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
@@ -19,9 +18,8 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly-2024-10-13
           components: rustfmt
 
       - name: Check Formatting
@@ -38,7 +36,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: stable
 
       - name: Verify Forge installation
         run: forge --version
@@ -46,9 +44,8 @@ jobs:
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly-2024-10-13
           components: clippy
 
       - uses: swatinem/rust-cache@v2
@@ -67,6 +64,8 @@ jobs:
     timeout-minutes: 90
     name: Unit tests
     runs-on: ubuntu-latest
+    env:
+      RUST_LOG: "build-output=debug,info"
     steps:
       - name: checkout code
         uses: actions/checkout@v4
@@ -74,7 +73,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: stable
 
       - name: Verify Forge installation
         run: forge --version
@@ -82,19 +81,23 @@ jobs:
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
 
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2024-10-13
-          components: clippy
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
         with:
           cache-on-failure: "true"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       - name: Forge build
         run: forge update && forge build
 
       - uses: taiki-e/github-actions/free-device-space@main
 
+      - name: build
+        run: cargo build --tests
+
       - name: tests
-        run: cargo test
+        run: RUST_LOG=info cargo nextest run --no-tests=pass
