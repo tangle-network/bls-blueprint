@@ -5,15 +5,15 @@ use std::path::Path;
 use std::process;
 
 fn main() {
-    let contract_dirs: Vec<&str> = vec!["../contracts"];
-    build::utils::soldeer_install();
-    build::utils::soldeer_update();
-    build::utils::build_contracts(contract_dirs);
+    let contract_dirs: Vec<&str> = vec!["contracts"];
+    build::soldeer_install();
+    build::soldeer_update();
+    build::build_contracts(contract_dirs);
 
     println!("cargo::rerun-if-changed=../src");
 
     let blueprint = blueprint! {
-        name: "experiment",
+        name: "bls-blueprint",
         master_manager_revision: "Latest",
         manager: { Evm = "BlsBlueprint" },
         jobs: [keygen, sign]

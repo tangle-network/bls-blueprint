@@ -1,8 +1,8 @@
 use crate::keygen_state_machine::BlsState;
 use blueprint_sdk as sdk;
+use blueprint_sdk::clients::BlueprintServicesClient;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use sdk::clients::GadgetServicesClient;
 use sdk::contexts::tangle::TangleClientContext;
 use sdk::crypto::sp_core::{SpEcdsa, SpEcdsaPublic};
 use sdk::crypto::tangle_pair_signer::sp_core;
@@ -11,7 +11,6 @@ use sdk::networking::AllowedKeys;
 use sdk::networking::service_handle::NetworkServiceHandle;
 use sdk::runner::config::BlueprintEnvironment;
 use sdk::stores::local_database::LocalDatabase;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The network protocol version for the BLS service
@@ -57,8 +56,8 @@ impl BlsContext {
             rx,
         )?;
 
-        let keystore_dir = PathBuf::from(&config.keystore_uri).join("bls.json");
-        let store = Arc::new(LocalDatabase::open(keystore_dir)?);
+        let store_path = config.data_dir.join("bls.json");
+        let store = Arc::new(LocalDatabase::open(store_path)?);
 
         Ok(Self {
             store,

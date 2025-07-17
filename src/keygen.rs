@@ -3,9 +3,8 @@ use crate::keygen_state_machine::KeygenMsg;
 use blueprint_sdk as sdk;
 use round_based::PartyIndex;
 use sdk::contexts::tangle::TangleClientContext;
-use sdk::crypto::sp_core::{SpEcdsa, SpEcdsaPublic};
+use sdk::crypto::sp_core::SpEcdsa;
 use sdk::extract::Context;
-use sdk::networking::discovery::peers::VerificationIdentifierKey;
 use sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
 use sdk::tangle::extract::{CallId, List, TangleArg, TangleResult};
 use std::collections::HashMap;
@@ -38,21 +37,19 @@ pub async fn keygen(
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
 
     // Setup party information
-    let (i, operators) = context
+    let (i, _operators) = context
         .tangle_client()
         .await?
         .get_party_index_and_operators()
         .await
         .map_err(|e| KeygenError::ContextError(e.to_string()))?;
-    let parties: HashMap<u16, VerificationIdentifierKey<SpEcdsa>> = operators
+
+    let parties: HashMap<PartyIndex, _> = context
+        .network_backend
+        .peers()
         .into_iter()
         .enumerate()
-        .map(|(j, (_, ecdsa))| {
-            (
-                j as PartyIndex,
-                VerificationIdentifierKey::InstancePublicKey(SpEcdsaPublic(ecdsa)),
-            )
-        })
+        .map(|(j, peer_id)| (j as PartyIndex, peer_id))
         .collect();
     let n = parties.len() as u16;
     let i = i as u16;
@@ -68,7 +65,7 @@ pub async fn keygen(
     let network = RoundBasedNetworkAdapter::<KeygenMsg, SpEcdsa>::new(
         context.network_backend.clone(),
         i,
-        parties.clone(),
+        &parties,
         crate::context::NETWORK_PROTOCOL,
     );
 

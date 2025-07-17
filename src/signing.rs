@@ -1,10 +1,10 @@
 use crate::context::BlsContext;
 use crate::signing_state_machine::SigningMsg;
 use blueprint_sdk as sdk;
+use round_based::PartyIndex;
 use sdk::contexts::tangle::TangleClientContext;
-use sdk::crypto::sp_core::{SpEcdsa, SpEcdsaPublic};
+use sdk::crypto::sp_core::SpEcdsa;
 use sdk::extract::Context;
-use sdk::networking::discovery::peers::VerificationIdentifierKey;
 use sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
 use sdk::tangle::extract::{List, TangleArgs2, TangleResult};
 use std::collections::HashMap;
@@ -55,22 +55,19 @@ pub async fn sign(
         .map_err(|e| SigningError::ContextError(e.to_string()))?;
 
     // Setup party information
-    let (i, operators) = context
+    let (i, _operators) = context
         .tangle_client()
         .await?
         .get_party_index_and_operators()
         .await
         .map_err(|e| SigningError::ContextError(e.to_string()))?;
 
-    let parties: HashMap<u16, VerificationIdentifierKey<SpEcdsa>> = operators
+    let parties: HashMap<PartyIndex, _> = context
+        .network_backend
+        .peers()
         .into_iter()
         .enumerate()
-        .map(|(j, (_, ecdsa))| {
-            (
-                j as u16,
-                VerificationIdentifierKey::InstancePublicKey(SpEcdsaPublic(ecdsa)),
-            )
-        })
+        .map(|(j, peer_id)| (j as u16, peer_id))
         .collect();
 
     let n = parties.len() as u16;
@@ -97,7 +94,7 @@ pub async fn sign(
     let network = RoundBasedNetworkAdapter::<SigningMsg, SpEcdsa>::new(
         context.network_backend.clone(),
         i,
-        parties.clone(),
+        &parties,
         crate::context::NETWORK_PROTOCOL,
     );
 
