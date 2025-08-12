@@ -57,7 +57,7 @@ keywords = ["tangle", "blueprint", "avs"]
 # Our blueprint
 bls-blueprint-lib = { path = "." }
 
-blueprint-sdk = "0.1.0-alpha.16"
+blueprint-sdk = "0.1.0-alpha.18"
 color-eyre = "0.6"
 hex = { version = "0.4.3", default-features = false }
 serde = "1.0.214"
