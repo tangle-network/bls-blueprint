@@ -62,7 +62,7 @@ color-eyre = "0.6"
 hex = { version = "0.4.3", default-features = false }
 serde = "1.0.214"
 round-based = "0.4.1"
-thiserror = "2.0.3"
+thiserror = "2.0.17"
 itertools = "0.14.0"
 tracing = "0.1.41"
 tokio = "1.43.0"
