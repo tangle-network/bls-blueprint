@@ -1,43 +1,45 @@
 [package]
 name = "bls-blueprint"
-version = "0.1.1"
+version = "0.2.0"
 description = "A BLS Blueprint that can run keygen and signing jobs on demand from the Tangle network"
-edition = "2021"
-
-[package.metadata.blueprint]
-manager = { Evm = "BlsBlueprint" }
+edition = "2024"
 
 [dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = [
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = [
     "std",
+    "tracing",
     "macros",
     "tangle",
     "networking",
     "local-store",
     "round-based-compat",
-    "networking-sp-core-ecdsa"
 ] }
-color-eyre = { version = "0.6", features = ["tracing-error", "color-spantrace"] }
+crossbeam-channel = "0.5"
 hex = { version = "0.4.3", default-features = false }
-serde = { version = "1.0.214", features = ["derive"] }
+libp2p = { version = "0.54", default-features = false }
+serde = { version = "1", features = ["derive"] }
 round-based = { version = "0.4.1", features = ["runtime-tokio", "derive"] }
-thiserror = "2.0.3"
-itertools = "0.13.0"
-tracing = "0.1.41"
+thiserror = "2"
+itertools = "0.13"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", default-features = false, features = ["sync", "rt"] }
+futures = "0.3"
 
 # MPC specific deps
-bls12_381_plus = "0.8.18"
-snowbridge-milagro-bls = "1.5.4"
-gennaro-dkg = { version = "0.8.0", features = ["curve25519"]}
-
-[build-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["build"] }
+blsful = "3.1"
+snowbridge-milagro-bls = "1.5"
+gennaro-dkg = { version = "1.0.0-rc6", default-features = false, features = ["bls"] }
 
 [dev-dependencies]
-blueprint-sdk = { git = "https://github.com/tangle-network/gadget.git", features = ["std", "tangle", "testing"] }
-color-eyre = { version = "0.6", features = ["capture-spantrace", "track-caller"] }
-tokio = { version = "1.43.0", features = ["test-util"] }
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branch = "main", default-features = false, features = ["std", "tangle", "testing", "networking", "round-based-compat"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+tracing-subscriber = "0.3"
 
 [features]
 default = ["std"]
 std = []
+
+[patch.crates-io]
+gennaro-dkg = { path = "vendor/gennaro-dkg" }
+blstrs_plus = { path = "vendor/blstrs_plus" }

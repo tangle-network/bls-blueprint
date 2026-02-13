@@ -1,32 +1,59 @@
 use bls_blueprint::context::BlsContext;
-use blueprint_sdk as sdk;
-use blueprint_sdk::crypto::tangle_pair_signer::sp_core::Pair;
-use color_eyre::Result;
-use sdk::logging;
-use sdk::runners::core::runner::BlueprintRunner;
-use sdk::runners::tangle::tangle::TangleConfig;
+use bls_blueprint::router;
+use blueprint_sdk::contexts::tangle::TangleClientContext;
+use blueprint_sdk::runner::BlueprintRunner;
+use blueprint_sdk::runner::config::BlueprintEnvironment;
+use blueprint_sdk::runner::tangle::config::TangleConfig;
+use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
+use blueprint_sdk::info;
 
-#[sdk::main(env)]
-async fn main() {
-    let context = BlsContext::new(env.clone()).await?;
+#[tokio::main]
+async fn main() -> Result<(), blueprint_sdk::Error> {
+    setup_log();
 
-    logging::info!(
-        "Starting the Blueprint Runner for {} ...",
-        hex::encode(context.identity.public())
-    );
+    let env = BlueprintEnvironment::load()?;
 
-    logging::info!("~~~ Executing the BLS blueprint ~~~");
+    // Initialize global BLS context (networking + store)
+    BlsContext::init(&env)
+        .await
+        .map_err(|e| blueprint_sdk::Error::Other(e))?;
 
+    let tangle_client = env
+        .tangle_client()
+        .await
+        .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?;
+
+    let service_id = env
+        .protocol_settings
+        .tangle()
+        .map_err(|e| blueprint_sdk::Error::Other(e.to_string()))?
+        .service_id
+        .ok_or_else(|| blueprint_sdk::Error::Other("SERVICE_ID missing".into()))?;
+
+    info!("Starting BLS blueprint for service {service_id}");
+
+    let tangle_producer = TangleProducer::new(tangle_client.clone(), service_id);
+    let tangle_consumer = TangleConsumer::new(tangle_client);
     let tangle_config = TangleConfig::default();
-    let keygen = bls_blueprint::keygen::KeygenEventHandler::new(&env, context.clone()).await?;
-    let signing = bls_blueprint::signing::SignEventHandler::new(&env, context.clone()).await?;
 
-    BlueprintRunner::new(tangle_config, env.clone())
-        .job(keygen)
-        .job(signing)
+    BlueprintRunner::builder(tangle_config, env)
+        .router(router())
+        .producer(tangle_producer)
+        .consumer(tangle_consumer)
+        .with_shutdown_handler(async {
+            info!("Shutting down BLS blueprint");
+        })
         .run()
         .await?;
 
-    logging::info!("Exiting...");
     Ok(())
+}
+
+fn setup_log() {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{EnvFilter, fmt};
+    let _ = tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .try_init();
 }
