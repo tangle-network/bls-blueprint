@@ -1,103 +1,79 @@
 use crate::keygen_state_machine::BlsState;
-use blueprint_sdk as sdk;
 use blueprint_sdk::clients::BlueprintServicesClient;
-use color_eyre::Result;
-use color_eyre::eyre::eyre;
-use sdk::contexts::tangle::TangleClientContext;
-use sdk::crypto::sp_core::{SpEcdsa, SpEcdsaPublic};
-use sdk::crypto::tangle_pair_signer::sp_core;
-use sdk::macros::context::{KeystoreContext, ServicesContext, TangleClientContext};
-use sdk::networking::AllowedKeys;
-use sdk::networking::service_handle::NetworkServiceHandle;
-use sdk::runner::config::BlueprintEnvironment;
-use sdk::stores::local_database::LocalDatabase;
-use std::sync::Arc;
+use blueprint_sdk::contexts::tangle::TangleClientContext;
+use blueprint_sdk::crypto::k256::K256Ecdsa;
+use blueprint_sdk::networking::service_handle::NetworkServiceHandle;
+use blueprint_sdk::runner::config::BlueprintEnvironment;
+use blueprint_sdk::stores::local_database::LocalDatabase;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 /// The network protocol version for the BLS service
 pub(crate) const NETWORK_PROTOCOL: &str = "bls/gennaro/1.0.0";
 
-/// BLS Service Context that holds all the necessary context for the service
-/// to run. This structure implements various traits for keystore, client, and service
-/// functionality.
-#[derive(Clone, KeystoreContext, TangleClientContext, ServicesContext)]
+/// Global BLS context, initialized once at startup.
+static BLS_CTX: OnceLock<BlsContext> = OnceLock::new();
+
+/// Get the global BLS context. Panics if not initialized.
+pub fn bls_ctx() -> &'static BlsContext {
+    BLS_CTX.get().expect("BlsContext not initialized")
+}
+
+/// BLS Service Context that holds all the necessary context for the service.
+#[derive(Clone)]
 pub struct BlsContext {
-    #[config]
-    pub config: BlueprintEnvironment,
-    pub network_backend: NetworkServiceHandle<SpEcdsa>,
+    pub env: BlueprintEnvironment,
+    pub network_backend: NetworkServiceHandle<K256Ecdsa>,
     pub store: Arc<LocalDatabase<BlsState>>,
-    pub identity: sp_core::ecdsa::Pair,
-    #[allow(dead_code)]
-    update_allowed_keys: crossbeam_channel::Sender<AllowedKeys<SpEcdsa>>,
 }
 
-// Core context management implementation
 impl BlsContext {
-    /// Creates a new service context with the provided configuration
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Network initialization fails
-    /// - Configuration is invalid
-    pub async fn new(config: BlueprintEnvironment) -> Result<Self> {
-        let service_operators = config.tangle_client().await?.get_operators().await?;
-        let allowed_keys = service_operators
-            .values()
-            .map(|k| SpEcdsaPublic(*k))
-            .collect();
+    /// Creates and globally initializes the BLS context.
+    pub async fn init(env: &BlueprintEnvironment) -> Result<(), String> {
+        let tangle_client = env.tangle_client().await.map_err(|e| e.to_string())?;
 
-        let network_config = config.libp2p_network_config::<SpEcdsa>(NETWORK_PROTOCOL, false)?;
-        let identity = network_config.instance_key_pair.0.clone();
+        let operators = tangle_client
+            .get_operators()
+            .await
+            .map_err(|e| e.to_string())?;
 
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let network_backend = config.libp2p_start_network(
-            network_config,
-            AllowedKeys::<SpEcdsa>::InstancePublicKeys(allowed_keys),
-            rx,
-        )?;
+        let operator_keys =
+            blueprint_sdk::networking::service::AllowedKeys::<K256Ecdsa>::EvmAddresses(
+                operators.keys().cloned().collect(),
+            );
 
-        let store_path = config.data_dir.join("bls.json");
-        let store = Arc::new(LocalDatabase::open(store_path)?);
+        let (_allowed_keys_tx, allowed_keys_rx) = crossbeam_channel::unbounded();
 
-        Ok(Self {
-            store,
-            identity,
-            config,
+        let network_config = env
+            .libp2p_network_config::<K256Ecdsa>(NETWORK_PROTOCOL, false)
+            .map_err(|e| e.to_string())?;
+
+        let network_backend = env
+            .libp2p_start_network(network_config, operator_keys, allowed_keys_rx)
+            .map_err(|e| e.to_string())?;
+
+        let keystore_dir = PathBuf::from(&env.keystore_uri).join("bls.json");
+        let store = Arc::new(
+            LocalDatabase::open(keystore_dir).map_err(|e| format!("Failed to open store: {e}"))?,
+        );
+
+        let ctx = BlsContext {
+            env: env.clone(),
             network_backend,
-            update_allowed_keys: tx,
-        })
+            store,
+        };
+
+        BLS_CTX
+            .set(ctx)
+            .map_err(|_| "BlsContext already initialized".to_string())
     }
 
-    /// Returns a reference to the configuration
-    #[inline]
-    pub fn config(&self) -> &BlueprintEnvironment {
-        &self.config
-    }
-
-    /// Returns a clone of the store handle
-    #[inline]
-    pub fn store(&self) -> Arc<LocalDatabase<BlsState>> {
-        self.store.clone()
-    }
-
-    /// Returns the network protocol version
-    #[inline]
-    pub fn network_protocol(&self) -> &str {
-        NETWORK_PROTOCOL
-    }
-}
-
-// Protocol-specific implementations
-impl BlsContext {
-    /// Retrieves the current blueprint ID from the configuration
-    ///
-    /// # Errors
-    /// Returns an error if the blueprint ID is not found in the configuration
-    pub fn blueprint_id(&self) -> Result<u64> {
-        self.config()
+    /// Returns the blueprint ID
+    pub fn blueprint_id(&self) -> Result<u64, String> {
+        self.env
             .protocol_settings
             .tangle()
             .map(|c| c.blueprint_id)
-            .map_err(|err| eyre!("Blueprint ID not found in configuration: {err}"))
+            .map_err(|err| format!("Blueprint ID not found: {err}"))
     }
 }

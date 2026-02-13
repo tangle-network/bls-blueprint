@@ -1,1 +1,2 @@
-tnt-core/=dependencies/tnt-core-0.4.0/src
+tnt-core/=dependencies/tnt-core-0.10.1/
+@openzeppelin/contracts/=dependencies/tnt-core-0.10.1/dependencies/@openzeppelin-contracts-5.1.0/

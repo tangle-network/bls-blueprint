@@ -29,11 +29,19 @@ pub struct Msg1 {
     pub body: Vec<u8>, // signature_share
 }
 
+impl HasRecipient for SigningMsg {
+    fn recipient(&self) -> MessageDestination {
+        match self {
+            SigningMsg::Round1Broadcast(..) => MessageDestination::AllParties,
+        }
+    }
+}
+
 pub async fn bls_signing_protocol<M, T>(
     party: M,
     i: PartyIndex,
     n: u16,
-    state: &mut BlsState,
+    state: &BlsState,
     input_data_to_sign: T,
 ) -> Result<BlsSigningState, SigningError>
 where
@@ -44,19 +52,12 @@ where
     let (incomings, mut outgoings) = delivery.split();
     let mut signing_state = BlsSigningState::default();
 
-    // let threshold = state.t;
+    // Extract secret key bytes from state
+    let secret_key_bytes = state.secret_key_bytes.as_ref().ok_or_else(|| {
+        SigningError::KeyRetrievalError("Secret key not found in state".to_string())
+    })?;
 
-    // Extract secret key from state
-    let secret_key = state
-        .secret_key
-        .as_ref()
-        .ok_or_else(|| {
-            SigningError::KeyRetrievalError("Secret key not found in state".to_string())
-        })?
-        .get_secret_share()
-        .ok_or_else(|| SigningError::KeyRetrievalError("Failed to get secret share".to_string()))?;
-
-    let secret_key = SecretKey::from_bytes(&secret_key.to_be_bytes())
+    let secret_key = SecretKey::from_bytes(secret_key_bytes)
         .map_err(|e| SigningError::MpcError(format!("Failed to create secret key: {e:?}")))?;
 
     // Step 1: Generate shares
@@ -83,7 +84,7 @@ where
     let msgs = rounds
         .complete(round)
         .await
-        .map_err(|e| SigningError::MpcError(format!("Failed to complete round: {}", e)))?;
+        .map_err(|e| SigningError::MpcError(format!("Failed to complete round: {e}")))?;
 
     for msg in msgs.into_vec_including_me(my_msg) {
         let (sender, sig) = (msg.sender, msg.body);
@@ -127,14 +128,6 @@ where
     signing_state.secret_key = Some(secret_key);
 
     Ok(signing_state)
-}
-
-impl HasRecipient for SigningMsg {
-    fn recipient(&self) -> MessageDestination {
-        match self {
-            SigningMsg::Round1Broadcast(..) => MessageDestination::AllParties,
-        }
-    }
 }
 
 async fn send_message<M, Msg>(

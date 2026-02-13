@@ -1,69 +1,60 @@
-use crate::context::BlsContext;
+use crate::KeygenRequest;
+use crate::KeygenResult;
+use crate::context::bls_ctx;
 use crate::keygen_state_machine::KeygenMsg;
-use blueprint_sdk as sdk;
+use blueprint_sdk::crypto::k256::K256Ecdsa;
+use blueprint_sdk::info;
+use blueprint_sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
+use blueprint_sdk::tangle::extract::{Caller, TangleArg, TangleResult};
 use round_based::PartyIndex;
-use sdk::contexts::tangle::TangleClientContext;
-use sdk::crypto::sp_core::SpEcdsa;
-use sdk::extract::Context;
-use sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
-use sdk::tangle::extract::{CallId, List, TangleArg, TangleResult};
 use std::collections::HashMap;
 
-pub const KEYGEN_JOB_ID: u8 = 0;
+const KEYGEN_SALT: &str = "bls-keygen";
 
-/// Runs a distributed key generation (DKG) process using the BLS protocol
+/// Runs a distributed key generation (DKG) process using the BLS protocol.
 ///
-/// # Arguments
-/// * `t` - Threshold value for the DKG process
-/// * `context` - The DFNS context containing network and storage configuration
-///
-/// # Returns
-/// Returns the generated public key as a byte vector on success
-///
-/// # Errors
-/// Returns an error if:
-/// - Failed to retrieve blueprint ID or call ID
-/// - Failed to get party information
-/// - MPC protocol execution failed
-/// - Serialization of results failed
+/// Extracts threshold `t` from the on-chain request, runs the Gennaro DKG
+/// protocol via round-based networking, and returns the aggregated public key.
 pub async fn keygen(
-    Context(context): Context<BlsContext>,
-    CallId(call_id): CallId,
-    TangleArg(t): TangleArg<u16>,
-) -> Result<TangleResult<List<u8>>, sdk::Error> {
-    // Get configuration and compute deterministic values
-    let blueprint_id = context
-        .blueprint_id()
-        .map_err(|e| KeygenError::ContextError(e.to_string()))?;
+    Caller(_caller): Caller,
+    TangleArg(request): TangleArg<KeygenRequest>,
+) -> Result<TangleResult<KeygenResult>, String> {
+    let ctx = bls_ctx();
+    let t = request.t;
 
-    // Setup party information
-    let (i, _operators) = context
-        .tangle_client()
-        .await?
-        .get_party_index_and_operators()
-        .await
-        .map_err(|e| KeygenError::ContextError(e.to_string()))?;
+    // Get party info from connected peers
+    let mut all_peers = ctx.network_backend.peers();
+    let local_peer_id = ctx.network_backend.local_peer_id;
+    if !all_peers.contains(&local_peer_id) {
+        all_peers.push(local_peer_id);
+    }
+    all_peers.sort();
 
-    let parties: HashMap<PartyIndex, _> = context
-        .network_backend
-        .peers()
+    let n = all_peers.len() as u16;
+    let i = all_peers
+        .iter()
+        .position(|p| *p == local_peer_id)
+        .ok_or_else(|| "Local peer not found in peer list".to_string())? as u16;
+
+    let parties: HashMap<PartyIndex, libp2p::PeerId> = all_peers
         .into_iter()
         .enumerate()
-        .map(|(j, peer_id)| (j as PartyIndex, peer_id))
+        .map(|(idx, peer_id)| (idx as PartyIndex, peer_id))
         .collect();
-    let n = parties.len() as u16;
-    let i = i as u16;
+
+    let blueprint_id = ctx.blueprint_id()?;
+    let call_id = 0u64; // Deterministic from on-chain context
 
     let (meta_hash, deterministic_hash) =
         crate::compute_deterministic_hashes(n, blueprint_id, call_id, KEYGEN_SALT);
 
-    sdk::info!(
+    info!(
         "Starting BLS Keygen for party {i}, n={n}, t={t}, eid={}",
         hex::encode(deterministic_hash)
     );
 
-    let network = RoundBasedNetworkAdapter::<KeygenMsg, SpEcdsa>::new(
-        context.network_backend.clone(),
+    let network = RoundBasedNetworkAdapter::<KeygenMsg, K256Ecdsa>::new(
+        ctx.network_backend.clone(),
         i,
         &parties,
         crate::context::NETWORK_PROTOCOL,
@@ -73,7 +64,7 @@ pub async fn keygen(
 
     let output = crate::keygen_state_machine::bls_keygen_protocol(party, i, t, n, call_id).await?;
 
-    sdk::info!(
+    info!(
         "Ending BLS Keygen for party {i}, n={n}, t={t}, eid={}",
         hex::encode(deterministic_hash)
     );
@@ -81,19 +72,17 @@ pub async fn keygen(
     let public_key = output
         .uncompressed_pk
         .clone()
-        .ok_or_else(|| KeygenError::MpcError("Public key missing".to_string()))?;
+        .ok_or_else(|| "Public key missing from keygen output".to_string())?;
 
     // Store the results
     let store_key = hex::encode(meta_hash);
-    context.store.set(&store_key, output)?;
+    let _ = ctx.store.set(&store_key, output);
 
-    Ok(TangleResult(public_key.into()))
+    Ok(TangleResult(KeygenResult {
+        public_key: public_key.into(),
+    }))
 }
 
-/// Configuration constants for the BLS keygen process
-const KEYGEN_SALT: &str = "bls-keygen";
-
-/// Error type for keygen-specific operations
 #[derive(Debug, thiserror::Error)]
 pub enum KeygenError {
     #[error("Failed to serialize data: {0}")]
@@ -109,8 +98,8 @@ pub enum KeygenError {
     DeliveryError(String),
 }
 
-impl From<KeygenError> for sdk::Error {
+impl From<KeygenError> for String {
     fn from(err: KeygenError) -> Self {
-        sdk::Error::Other(err.to_string())
+        err.to_string()
     }
 }

@@ -1,88 +1,86 @@
-use blueprint_sdk as sdk;
-use gennaro_dkg::{
-    Parameters, Participant, Round1BroadcastData, Round1P2PData, Round2EchoBroadcastData,
-    Round3BroadcastData, Round4EchoBroadcastData, SecretParticipantImpl,
-};
-use itertools::Itertools;
+use blsful::inner_types::{G1Projective, Scalar};
+use gennaro_dkg::vsss_rs::IdentifierPrimeField;
+use gennaro_dkg::{Parameters, SecretParticipant};
 use round_based::MessageDestination;
-use round_based::SinkExt;
-use round_based::rounds_router::{Round, RoundsRouter, simple_store::RoundInput};
+use round_based::rounds_router::{RoundsRouter, simple_store::RoundInput};
 use round_based::{Delivery, Mpc, MpcParty, PartyIndex, ProtocolMessage};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use tracing::info;
 
 use crate::keygen::KeygenError;
 
-type Group = bls12_381_plus::G1Projective;
-
+/// State persisted after keygen, needed for signing.
+/// Stores the secret key scalar and aggregated public key as raw bytes.
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct BlsState {
-    round1_broadcasts: BTreeMap<usize, Round1BroadcastData<Group>>,
-    round1_p2p: BTreeMap<usize, Round1P2PData>,
-    round2_broadcasts: BTreeMap<usize, Round2EchoBroadcastData>,
-    round3_broadcasts: BTreeMap<usize, Round3BroadcastData<Group>>,
-    round4_broadcasts: BTreeMap<usize, Round4EchoBroadcastData<Group>>,
-    round5_broadcasts: BTreeMap<usize, Vec<u8>>,
-    pub uncompressed_pk: Option<Vec<u8>>, // [u8; 97]
-    pub secret_key: Option<Participant<SecretParticipantImpl<Group>, Group>>,
+    /// Secret key scalar bytes (32 bytes, big-endian)
+    pub secret_key_bytes: Option<Vec<u8>>,
+    /// Aggregated uncompressed public key bytes (97 bytes, milagro format)
+    pub uncompressed_pk: Option<Vec<u8>>,
+    /// The call_id of the keygen job
     pub call_id: u64,
+    /// Threshold
     pub t: u16,
 }
 
-impl BlsState {
-    pub fn new(call_id: u64, t: u16) -> Self {
-        BlsState {
-            call_id,
-            t,
-            ..Default::default()
-        }
-    }
-}
-
+/// Messages for the BLS keygen protocol.
+/// Rounds 1-4: gennaro-dkg protocol (run/receive pattern)
+/// Round 5: milagro public key share broadcast + aggregation
 #[derive(ProtocolMessage, Serialize, Deserialize, Clone)]
 pub enum KeygenMsg {
-    Round1Broadcast(Msg1),
-    Round1P2P(Msg1P2P),
-    Round2Broadcast(Msg2),
-    Round3Broadcast(Msg3),
-    Round4Broadcast(Msg4),
-    Round5Broadcast(Msg5),
+    DkgRound1(DkgRound1Msg),
+    DkgRound2(DkgRound2Msg),
+    DkgRound3(DkgRound3Msg),
+    DkgRound4(DkgRound4Msg),
+    PkShareBroadcast(PkShareMsg),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Msg1 {
-    source: u16,
-    data: Round1BroadcastData<Group>,
+pub struct DkgRound1Msg {
+    pub source: u16,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Msg1P2P {
-    source: u16,
-    destination: u16,
-    data: Round1P2PData,
-}
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Msg2 {
-    source: u16,
-    data: Round2EchoBroadcastData,
-}
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Msg3 {
-    source: u16,
-    data: Round3BroadcastData<Group>,
-}
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Msg4 {
-    source: u16,
-    data: Round4EchoBroadcastData<Group>,
+pub struct DkgRound2Msg {
+    pub source: u16,
+    pub destination: u16,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Msg5 {
-    source: u16,
-    data: Vec<u8>,
+pub struct DkgRound3Msg {
+    pub source: u16,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DkgRound4Msg {
+    pub source: u16,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PkShareMsg {
+    pub source: u16,
+    pub data: Vec<u8>,
+}
+
+pub trait HasRecipient {
+    fn recipient(&self) -> MessageDestination;
+}
+
+impl HasRecipient for KeygenMsg {
+    fn recipient(&self) -> MessageDestination {
+        match self {
+            KeygenMsg::DkgRound1(_)
+            | KeygenMsg::DkgRound3(_)
+            | KeygenMsg::DkgRound4(_)
+            | KeygenMsg::PkShareBroadcast(_) => MessageDestination::AllParties,
+            KeygenMsg::DkgRound2(msg) => MessageDestination::OneParty(msg.destination),
+        }
+    }
 }
 
 #[tracing::instrument(skip_all)]
@@ -97,363 +95,192 @@ where
     M: Mpc<ProtocolMessage = KeygenMsg>,
 {
     let MpcParty { delivery, .. } = party.into_party();
-
     let (incomings, mut outgoings) = delivery.split();
-    let mut state = BlsState::new(call_id, t);
 
-    let i = NonZeroUsize::new((i + 1) as usize).expect("I > 0");
-    let n = NonZeroUsize::new(n as usize).expect("N > 0");
-    let t = NonZeroUsize::new(t as usize).expect("T > 0");
-    let parameters = Parameters::new(t, n);
-    let mut me =
-        Participant::new(i, parameters).map_err(|e| KeygenError::MpcError(e.to_string()))?;
+    // Create gennaro-dkg participant with 1-indexed sequential IDs
+    let t_nz = NonZeroUsize::new(t as usize).expect("T > 0");
+    let n_nz = NonZeroUsize::new(n as usize).expect("N > 0");
+    let parameters = Parameters::new(t_nz, n_nz, None, None, None);
 
-    let (i, _t, n) = (i.get() as u16, t.get() as u16, n.get() as u16);
-    let i = i - 1;
+    let my_id = IdentifierPrimeField(Scalar::from((i + 1) as u64));
+    let mut participant = SecretParticipant::<G1Projective>::new(my_id, &parameters)
+        .map_err(|e| KeygenError::MpcError(e.to_string()))?;
 
-    // Build rounds
+    // Setup round-based router: 4 DKG rounds + 1 PK aggregation round
     let mut rounds = RoundsRouter::builder();
-    let round1 = rounds.add_round(RoundInput::<Msg1>::broadcast(i, n));
-    let round1_p2p_msg = rounds.add_round(RoundInput::<Msg1P2P>::p2p(i, n));
-    let round2 = rounds.add_round(RoundInput::<Msg2>::broadcast(i, n));
-    let round3 = rounds.add_round(RoundInput::<Msg3>::broadcast(i, n));
-    let round4 = rounds.add_round(RoundInput::<Msg4>::broadcast(i, n));
-    let round5 = rounds.add_round(RoundInput::<Msg5>::broadcast(i, n));
+    let r1 = rounds.add_round(RoundInput::<DkgRound1Msg>::broadcast(i, n));
+    let r2 = rounds.add_round(RoundInput::<DkgRound2Msg>::p2p(i, n));
+    let r3 = rounds.add_round(RoundInput::<DkgRound3Msg>::broadcast(i, n));
+    let r4 = rounds.add_round(RoundInput::<DkgRound4Msg>::broadcast(i, n));
+    let r5 = rounds.add_round(RoundInput::<PkShareMsg>::broadcast(i, n));
     let mut rounds = rounds.listen(incomings);
 
-    let (round1_broadcasts, round1_p2p_messages) = me
-        .round1()
-        .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-    // Handle all rounds
-    round1_broadcast::<M>(
-        i,
-        round1_broadcasts,
-        &mut outgoings,
-        &mut state,
-        &mut rounds,
-        round1,
-    )
-    .await?;
-    round1_p2p::<M>(
-        i,
-        round1_p2p_messages,
-        &mut outgoings,
-        &mut state,
-        &mut rounds,
-        round1_p2p_msg,
-    )
-    .await?;
-    let round2_broadcast_data = me
-        .round2(state.round1_broadcasts.clone(), state.round1_p2p.clone())
-        .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-    round2_broadcast::<M>(
-        i,
-        round2_broadcast_data,
-        &mut outgoings,
-        &mut state,
-        &mut rounds,
-        round2,
-    )
-    .await?;
-
-    let round3_broadcast_data = me
-        .round3(&state.round2_broadcasts)
-        .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-
-    round3_broadcast::<M>(
-        i,
-        round3_broadcast_data,
-        &mut outgoings,
-        &mut state,
-        &mut rounds,
-        round3,
-    )
-    .await?;
-
-    let round4_broadcast_data = me
-        .round4(&state.round3_broadcasts)
-        .map_err(|e| KeygenError::MpcError(e.to_string()))?;
-    round4_broadcast::<M>(
-        i,
-        round4_broadcast_data,
-        &mut outgoings,
-        &mut state,
-        &mut rounds,
-        round4,
-    )
-    .await?;
-
-    // Compile the secret
-    let sk = me
-        .get_secret_share()
-        .ok_or_else(|| KeygenError::MpcError("Failed to get secret share".to_string()))?;
-    let share = snowbridge_milagro_bls::SecretKey::from_bytes(&sk.to_be_bytes())
-        .map_err(|e| KeygenError::MpcError(format!("Failed to create secret key: {e:?}")))?;
-    let pk_share = snowbridge_milagro_bls::PublicKey::from_secret_key(&share);
-
-    // Broadcast the key, aggregate shared pk
-    round5_broadcast::<M>(
-        i,
-        pk_share.clone(),
-        &mut outgoings,
-        &mut state,
-        &mut rounds,
-        round5,
-    )
-    .await?;
-    state.secret_key = Some(me);
-
-    Ok(state)
-}
-
-#[tracing::instrument(skip_all)]
-async fn round1_broadcast<M>(
-    i: u16,
-    round1_broadcast_data: Round1BroadcastData<Group>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
-    state: &mut BlsState,
-    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
-    round1: Round<RoundInput<Msg1>>,
-) -> Result<(), KeygenError>
-where
-    M: Mpc<ProtocolMessage = KeygenMsg>,
-{
-    let broadcast_msg = KeygenMsg::Round1Broadcast(Msg1 {
-        source: i,
-        data: round1_broadcast_data,
-    });
-    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
-    let round1_broadcasts = rounds
-        .complete(round1)
-        .await
-        .map_err(|err| KeygenError::MpcError(err.to_string()))?;
-    state.round1_broadcasts = round1_broadcasts
-        .into_iter_indexed()
-        .map(|r| ((r.2.source + 1) as _, r.2.data))
-        .collect();
-
-    sdk::info!(
-        "[BLS] Received {} messages from round 1",
-        state.round1_broadcasts.len()
-    );
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-async fn round1_p2p<M>(
-    i: u16,
-    round1_p2p_data: BTreeMap<usize, Round1P2PData>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
-    state: &mut BlsState,
-    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
-    round1_p2p: Round<RoundInput<Msg1P2P>>,
-) -> Result<(), KeygenError>
-where
-    M: Mpc<ProtocolMessage = KeygenMsg>,
-{
-    for (j, round1_p2p_data) in round1_p2p_data {
-        let p2p_msg = KeygenMsg::Round1P2P(Msg1P2P {
-            source: i,
-            destination: (j - 1) as u16,
-            data: round1_p2p_data,
-        });
-        send_message::<M, KeygenMsg>(p2p_msg, tx).await?;
-    }
-
-    let round1_p2p = rounds
-        .complete(round1_p2p)
-        .await
-        .map_err(|err| KeygenError::MpcError(err.to_string()))?;
-    state.round1_p2p = round1_p2p
-        .into_iter_indexed()
-        .map(|r| ((r.2.source + 1) as _, r.2.data))
-        .collect();
-
-    sdk::info!(
-        "[BLS] Received {} messages from round 1 P2P",
-        state.round1_p2p.len()
-    );
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-async fn round2_broadcast<M>(
-    i: u16,
-    round2_broadcast_data: Round2EchoBroadcastData,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
-    state: &mut BlsState,
-    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
-    round2: Round<RoundInput<Msg2>>,
-) -> Result<(), KeygenError>
-where
-    M: Mpc<ProtocolMessage = KeygenMsg>,
-{
-    let broadcast_msg = KeygenMsg::Round2Broadcast(Msg2 {
-        source: i,
-        data: round2_broadcast_data,
-    });
-    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
-    let round2_broadcasts = rounds
-        .complete(round2)
-        .await
-        .map_err(|err| KeygenError::MpcError(err.to_string()))?;
-    state.round2_broadcasts = round2_broadcasts
-        .into_iter_indexed()
-        .map(|r| ((r.2.source + 1) as _, r.2.data))
-        .collect();
-
-    sdk::info!(
-        "[BLS] Received {} messages from round 2",
-        state.round2_broadcasts.len()
-    );
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-async fn round3_broadcast<M>(
-    i: u16,
-    round3_broadcast_data: Round3BroadcastData<Group>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
-    state: &mut BlsState,
-    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
-    round3: Round<RoundInput<Msg3>>,
-) -> Result<(), KeygenError>
-where
-    M: Mpc<ProtocolMessage = KeygenMsg>,
-{
-    let broadcast_msg = KeygenMsg::Round3Broadcast(Msg3 {
-        source: i,
-        data: round3_broadcast_data,
-    });
-    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
-    let round3_broadcasts = rounds
-        .complete(round3)
-        .await
-        .map_err(|err| KeygenError::MpcError(err.to_string()))?;
-    state.round3_broadcasts = round3_broadcasts
-        .into_iter_indexed()
-        .map(|r| ((r.2.source + 1) as _, r.2.data))
-        .collect();
-
-    sdk::info!(
-        "[BLS] Received {} messages from round 3",
-        state.round3_broadcasts.len()
-    );
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-async fn round4_broadcast<M>(
-    i: u16,
-    round4_broadcast_data: Round4EchoBroadcastData<Group>,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
-    state: &mut BlsState,
-    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
-    round4: Round<RoundInput<Msg4>>,
-) -> Result<(), KeygenError>
-where
-    M: Mpc<ProtocolMessage = KeygenMsg>,
-{
-    let broadcast_msg = KeygenMsg::Round4Broadcast(Msg4 {
-        source: i,
-        data: round4_broadcast_data,
-    });
-    send_message::<M, KeygenMsg>(broadcast_msg, tx).await?;
-    let round4_broadcasts = rounds
-        .complete(round4)
-        .await
-        .map_err(|err| KeygenError::MpcError(err.to_string()))?;
-    state.round4_broadcasts = round4_broadcasts
-        .into_iter_indexed()
-        .map(|r| ((r.2.source + 1) as _, r.2.data))
-        .collect();
-
-    sdk::info!(
-        "[BLS] Received {} messages from round 4",
-        state.round4_broadcasts.len()
-    );
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-async fn round5_broadcast<M>(
-    i: u16,
-    round5_broadcast_data: snowbridge_milagro_bls::PublicKey,
-    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
-    state: &mut BlsState,
-    rounds: &mut RoundsRouter<KeygenMsg, <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Receive>,
-    round5: Round<RoundInput<Msg5>>,
-) -> Result<(), KeygenError>
-where
-    M: Mpc<ProtocolMessage = KeygenMsg>,
-{
-    let key_share = round5_broadcast_data.as_uncompressed_bytes().to_vec();
-    let my_broadcast = Msg5 {
-        source: i,
-        data: key_share,
+    // --- DKG Round 1: Broadcast commitment hashes ---
+    // NOTE: generator.iter() returns Box<dyn Iterator> which is !Send.
+    // We must collect all outputs before any .await to keep the future Send.
+    info!("[BLS-DKG] Round 1: commitment hashes");
+    let r1_outputs: Vec<_> = {
+        let generator = participant.run().map_err(dkg_err)?;
+        generator.iter().collect()
     };
-    let broadcast_msg = KeygenMsg::Round5Broadcast(my_broadcast.clone());
-    send_message::<M, KeygenMsg>(broadcast_msg.clone(), tx).await?;
+    let payload = r1_outputs
+        .into_iter()
+        .next()
+        .ok_or_else(|| KeygenError::MpcError("No round 1 output".into()))?
+        .data;
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::DkgRound1(DkgRound1Msg { source: i, payload }),
+    )
+    .await?;
 
-    let round5_broadcasts = rounds
-        .complete(round5)
+    for (_, _, msg) in rounds
+        .complete(r1)
         .await
-        .map_err(|err| KeygenError::MpcError(err.to_string()))?;
-    state.round5_broadcasts = round5_broadcasts
-        .into_iter_including_me(my_broadcast)
-        .map(|r| ((r.source + 1) as _, r.data))
-        .collect();
-
-    let mut received_pk_shares = HashMap::<usize, snowbridge_milagro_bls::PublicKey>::new();
-
-    for (id, key_share) in state.round5_broadcasts.iter() {
-        match snowbridge_milagro_bls::PublicKey::from_uncompressed_bytes(key_share) {
-            Ok(pk) => {
-                received_pk_shares.insert(*id, pk);
-            }
-            Err(e) => {
-                sdk::warn!("Failed to deserialize public key: {e:?}");
-            }
-        }
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
+        participant.receive(&msg.payload).map_err(dkg_err)?;
     }
 
-    let pk_shares = received_pk_shares
+    // --- DKG Round 2: P2P shares ---
+    info!("[BLS-DKG] Round 2: P2P shares");
+    let r2_outputs: Vec<_> = {
+        let generator = participant.run().map_err(dkg_err)?;
+        generator.iter().collect()
+    };
+    for output in r2_outputs {
+        let msg = KeygenMsg::DkgRound2(DkgRound2Msg {
+            source: i,
+            destination: output.dst_ordinal as u16,
+            payload: output.data,
+        });
+        send_msg::<M>(&mut outgoings, msg).await?;
+    }
+
+    for (_, _, msg) in rounds
+        .complete(r2)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
+        participant.receive(&msg.payload).map_err(dkg_err)?;
+    }
+
+    // --- DKG Round 3: Feldman commitments ---
+    info!("[BLS-DKG] Round 3: Feldman commitments");
+    let r3_outputs: Vec<_> = {
+        let generator = participant.run().map_err(dkg_err)?;
+        generator.iter().collect()
+    };
+    let payload = r3_outputs
         .into_iter()
-        .sorted_by_key(|x| x.0)
-        .map(|r| r.1)
-        .collect::<Vec<_>>();
+        .next()
+        .ok_or_else(|| KeygenError::MpcError("No round 3 output".into()))?
+        .data;
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::DkgRound3(DkgRound3Msg { source: i, payload }),
+    )
+    .await?;
+
+    for (_, _, msg) in rounds
+        .complete(r3)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
+        participant.receive(&msg.payload).map_err(dkg_err)?;
+    }
+
+    // --- DKG Round 4: Transcript verification ---
+    info!("[BLS-DKG] Round 4: transcript verification");
+    let r4_outputs: Vec<_> = {
+        let generator = participant.run().map_err(dkg_err)?;
+        generator.iter().collect()
+    };
+    let payload = r4_outputs
+        .into_iter()
+        .next()
+        .ok_or_else(|| KeygenError::MpcError("No round 4 output".into()))?
+        .data;
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::DkgRound4(DkgRound4Msg { source: i, payload }),
+    )
+    .await?;
+
+    for (_, _, msg) in rounds
+        .complete(r4)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
+        participant.receive(&msg.payload).map_err(dkg_err)?;
+    }
+
+    // --- DKG Round 5: Internal computation (no network) ---
+    participant.run().map_err(dkg_err)?;
+    assert!(
+        participant.completed(),
+        "DKG should be complete after round 5"
+    );
+
+    // Extract secret share scalar
+    let secret_share = participant
+        .get_secret_share()
+        .ok_or_else(|| KeygenError::MpcError("DKG incomplete: no secret share".into()))?;
+    let scalar: Scalar = *secret_share.value;
+    let secret_key_bytes = scalar.to_be_bytes().to_vec();
+
+    // --- Round 5 (network): Broadcast milagro pk shares for aggregation ---
+    info!("[BLS-DKG] Round 5: PK share broadcast + aggregation");
+    let milagro_sk = snowbridge_milagro_bls::SecretKey::from_bytes(&secret_key_bytes)
+        .map_err(|e| KeygenError::MpcError(format!("Failed to create milagro SK: {e:?}")))?;
+    let pk_share = snowbridge_milagro_bls::PublicKey::from_secret_key(&milagro_sk);
+    let my_pk_msg = PkShareMsg {
+        source: i,
+        data: pk_share.as_uncompressed_bytes().to_vec(),
+    };
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::PkShareBroadcast(my_pk_msg.clone()),
+    )
+    .await?;
+
+    let pk_received = rounds.complete(r5).await.map_err(mpc_err)?;
+    let all_pk_msgs = pk_received.into_vec_including_me(my_pk_msg);
+    let all_pk_shares: Result<Vec<_>, _> = all_pk_msgs
+        .iter()
+        .map(|msg| snowbridge_milagro_bls::PublicKey::from_uncompressed_bytes(&msg.data))
+        .collect();
+    let all_pk_shares =
+        all_pk_shares.map_err(|e| KeygenError::MpcError(format!("Bad pk share: {e:?}")))?;
 
     let pk_agg = snowbridge_milagro_bls::AggregatePublicKey::aggregate(
-        &pk_shares.iter().collect::<Vec<_>>(),
+        &all_pk_shares.iter().collect::<Vec<_>>(),
     )
-    .map_err(|e| KeygenError::MpcError(format!("Failed to aggregate public keys: {e:?}")))?;
+    .map_err(|e| KeygenError::MpcError(format!("Failed to aggregate PKs: {e:?}")))?;
 
-    let uncompressed_public_key = &mut [0u8; 97];
-    pk_agg.point.to_bytes(uncompressed_public_key, false);
-    state.uncompressed_pk = Some(uncompressed_public_key.to_vec());
+    let mut uncompressed_pk = [0u8; 97];
+    pk_agg.point.to_bytes(&mut uncompressed_pk, false);
 
-    sdk::info!(
-        "[BLS] Received {} messages from round 5",
-        state.round5_broadcasts.len()
-    );
-    Ok(())
+    info!("[BLS-DKG] Keygen complete for party {i}");
+
+    Ok(BlsState {
+        secret_key_bytes: Some(secret_key_bytes),
+        uncompressed_pk: Some(uncompressed_pk.to_vec()),
+        call_id,
+        t,
+    })
 }
 
-pub trait HasRecipient {
-    fn recipient(&self) -> MessageDestination;
+fn dkg_err(e: gennaro_dkg::Error) -> KeygenError {
+    KeygenError::MpcError(e.to_string())
 }
 
-impl HasRecipient for KeygenMsg {
-    fn recipient(&self) -> MessageDestination {
-        match self {
-            KeygenMsg::Round1Broadcast(_) => MessageDestination::AllParties,
-            KeygenMsg::Round1P2P(msg) => MessageDestination::OneParty(msg.destination),
-            KeygenMsg::Round2Broadcast(_) => MessageDestination::AllParties,
-            KeygenMsg::Round3Broadcast(_) => MessageDestination::AllParties,
-            KeygenMsg::Round4Broadcast(_) => MessageDestination::AllParties,
-            KeygenMsg::Round5Broadcast(_) => MessageDestination::AllParties,
-        }
-    }
+fn mpc_err<E: std::fmt::Display>(e: E) -> KeygenError {
+    KeygenError::MpcError(e.to_string())
 }
 
 #[tracing::instrument(skip_all)]
@@ -467,9 +294,18 @@ where
 {
     let recipient = msg.recipient();
     let msg = round_based::Outgoing { recipient, msg };
-    tx.send(msg)
+    futures::SinkExt::send(tx, msg)
         .await
         .map_err(|e| KeygenError::DeliveryError(e.to_string()))?;
-
     Ok(())
+}
+
+async fn send_msg<M>(
+    tx: &mut <<M as Mpc>::Delivery as Delivery<KeygenMsg>>::Send,
+    msg: KeygenMsg,
+) -> Result<(), KeygenError>
+where
+    M: Mpc<ProtocolMessage = KeygenMsg>,
+{
+    send_message::<M, KeygenMsg>(msg, tx).await
 }
