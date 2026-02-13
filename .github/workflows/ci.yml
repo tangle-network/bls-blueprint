@@ -44,6 +44,9 @@ jobs:
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
 
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -80,6 +83,9 @@ jobs:
 
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
+
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@stable
 
