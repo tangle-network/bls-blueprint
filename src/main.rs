@@ -1,13 +1,14 @@
 use bls_blueprint::context::BlsContext;
 use bls_blueprint::router;
 use blueprint_sdk::contexts::tangle::TangleClientContext;
+use blueprint_sdk::info;
 use blueprint_sdk::runner::BlueprintRunner;
 use blueprint_sdk::runner::config::BlueprintEnvironment;
 use blueprint_sdk::runner::tangle::config::TangleConfig;
 use blueprint_sdk::tangle::{TangleConsumer, TangleProducer};
-use blueprint_sdk::info;
 
 #[tokio::main]
+#[allow(clippy::result_large_err)]
 async fn main() -> Result<(), blueprint_sdk::Error> {
     setup_log();
 
@@ -16,7 +17,7 @@ async fn main() -> Result<(), blueprint_sdk::Error> {
     // Initialize global BLS context (networking + store)
     BlsContext::init(&env)
         .await
-        .map_err(|e| blueprint_sdk::Error::Other(e))?;
+        .map_err(blueprint_sdk::Error::Other)?;
 
     let tangle_client = env
         .tangle_client()

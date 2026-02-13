@@ -53,12 +53,9 @@ where
     let mut signing_state = BlsSigningState::default();
 
     // Extract secret key bytes from state
-    let secret_key_bytes = state
-        .secret_key_bytes
-        .as_ref()
-        .ok_or_else(|| {
-            SigningError::KeyRetrievalError("Secret key not found in state".to_string())
-        })?;
+    let secret_key_bytes = state.secret_key_bytes.as_ref().ok_or_else(|| {
+        SigningError::KeyRetrievalError("Secret key not found in state".to_string())
+    })?;
 
     let secret_key = SecretKey::from_bytes(secret_key_bytes)
         .map_err(|e| SigningError::MpcError(format!("Failed to create secret key: {e:?}")))?;
@@ -87,7 +84,7 @@ where
     let msgs = rounds
         .complete(round)
         .await
-        .map_err(|e| SigningError::MpcError(format!("Failed to complete round: {}", e)))?;
+        .map_err(|e| SigningError::MpcError(format!("Failed to complete round: {e}")))?;
 
     for msg in msgs.into_vec_including_me(my_msg) {
         let (sender, sig) = (msg.sender, msg.body);

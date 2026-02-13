@@ -1,8 +1,8 @@
 use blsful::inner_types::{G1Projective, Scalar};
-use gennaro_dkg::{SecretParticipant, Parameters};
 use gennaro_dkg::vsss_rs::IdentifierPrimeField;
-use round_based::rounds_router::{simple_store::RoundInput, RoundsRouter};
+use gennaro_dkg::{Parameters, SecretParticipant};
 use round_based::MessageDestination;
+use round_based::rounds_router::{RoundsRouter, simple_store::RoundInput};
 use round_based::{Delivery, Mpc, MpcParty, PartyIndex, ProtocolMessage};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
@@ -128,10 +128,18 @@ where
         .next()
         .ok_or_else(|| KeygenError::MpcError("No round 1 output".into()))?
         .data;
-    send_msg::<M>(&mut outgoings, KeygenMsg::DkgRound1(DkgRound1Msg { source: i, payload }))
-        .await?;
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::DkgRound1(DkgRound1Msg { source: i, payload }),
+    )
+    .await?;
 
-    for (_, _, msg) in rounds.complete(r1).await.map_err(mpc_err)?.into_iter_indexed() {
+    for (_, _, msg) in rounds
+        .complete(r1)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
         participant.receive(&msg.payload).map_err(dkg_err)?;
     }
 
@@ -150,7 +158,12 @@ where
         send_msg::<M>(&mut outgoings, msg).await?;
     }
 
-    for (_, _, msg) in rounds.complete(r2).await.map_err(mpc_err)?.into_iter_indexed() {
+    for (_, _, msg) in rounds
+        .complete(r2)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
         participant.receive(&msg.payload).map_err(dkg_err)?;
     }
 
@@ -165,10 +178,18 @@ where
         .next()
         .ok_or_else(|| KeygenError::MpcError("No round 3 output".into()))?
         .data;
-    send_msg::<M>(&mut outgoings, KeygenMsg::DkgRound3(DkgRound3Msg { source: i, payload }))
-        .await?;
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::DkgRound3(DkgRound3Msg { source: i, payload }),
+    )
+    .await?;
 
-    for (_, _, msg) in rounds.complete(r3).await.map_err(mpc_err)?.into_iter_indexed() {
+    for (_, _, msg) in rounds
+        .complete(r3)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
         participant.receive(&msg.payload).map_err(dkg_err)?;
     }
 
@@ -183,16 +204,27 @@ where
         .next()
         .ok_or_else(|| KeygenError::MpcError("No round 4 output".into()))?
         .data;
-    send_msg::<M>(&mut outgoings, KeygenMsg::DkgRound4(DkgRound4Msg { source: i, payload }))
-        .await?;
+    send_msg::<M>(
+        &mut outgoings,
+        KeygenMsg::DkgRound4(DkgRound4Msg { source: i, payload }),
+    )
+    .await?;
 
-    for (_, _, msg) in rounds.complete(r4).await.map_err(mpc_err)?.into_iter_indexed() {
+    for (_, _, msg) in rounds
+        .complete(r4)
+        .await
+        .map_err(mpc_err)?
+        .into_iter_indexed()
+    {
         participant.receive(&msg.payload).map_err(dkg_err)?;
     }
 
     // --- DKG Round 5: Internal computation (no network) ---
     participant.run().map_err(dkg_err)?;
-    assert!(participant.completed(), "DKG should be complete after round 5");
+    assert!(
+        participant.completed(),
+        "DKG should be complete after round 5"
+    );
 
     // Extract secret share scalar
     let secret_share = participant

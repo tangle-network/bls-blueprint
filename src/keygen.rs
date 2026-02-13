@@ -3,9 +3,9 @@ use crate::KeygenResult;
 use crate::context::bls_ctx;
 use crate::keygen_state_machine::KeygenMsg;
 use blueprint_sdk::crypto::k256::K256Ecdsa;
+use blueprint_sdk::info;
 use blueprint_sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
 use blueprint_sdk::tangle::extract::{Caller, TangleArg, TangleResult};
-use blueprint_sdk::info;
 use round_based::PartyIndex;
 use std::collections::HashMap;
 
@@ -62,8 +62,7 @@ pub async fn keygen(
 
     let party = round_based::party::MpcParty::connected(network);
 
-    let output =
-        crate::keygen_state_machine::bls_keygen_protocol(party, i, t, n, call_id).await?;
+    let output = crate::keygen_state_machine::bls_keygen_protocol(party, i, t, n, call_id).await?;
 
     info!(
         "Ending BLS Keygen for party {i}, n={n}, t={t}, eid={}",

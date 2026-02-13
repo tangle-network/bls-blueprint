@@ -3,9 +3,9 @@ use crate::SignResult;
 use crate::context::bls_ctx;
 use crate::signing_state_machine::SigningMsg;
 use blueprint_sdk::crypto::k256::K256Ecdsa;
+use blueprint_sdk::info;
 use blueprint_sdk::networking::round_based_compat::RoundBasedNetworkAdapter;
 use blueprint_sdk::tangle::extract::{Caller, TangleArg, TangleResult};
-use blueprint_sdk::info;
 use round_based::PartyIndex;
 use std::collections::HashMap;
 
@@ -90,8 +90,7 @@ pub async fn sign(
     let party = round_based::party::MpcParty::connected(network);
 
     let output =
-        crate::signing_state_machine::bls_signing_protocol(party, i, n, &state, message)
-            .await?;
+        crate::signing_state_machine::bls_signing_protocol(party, i, n, &state, message).await?;
 
     info!(
         "Ending BLS Signing for party {i}, n={n}, t={t}, eid={}",
