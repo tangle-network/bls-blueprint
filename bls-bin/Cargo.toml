@@ -1,0 +1,23 @@
+[package]
+name = "bls-blueprint-bin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[dependencies]
+bls-blueprint-lib.workspace = true
+
+blueprint-sdk = { workspace = true, features = ["std", "tangle"] }
+color-eyre.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tokio.workspace = true
+
+[build-dependencies]
+bls-blueprint-lib.workspace = true
+blueprint-sdk = { workspace = true, features = ["tangle", "macros", "build"] }
