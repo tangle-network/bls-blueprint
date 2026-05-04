@@ -16,7 +16,7 @@ blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", branc
 ] }
 crossbeam-channel = "0.5"
 hex = { version = "0.4.3", default-features = false }
-libp2p = { version = "0.54", default-features = false }
+libp2p = { version = "0.56", default-features = false }
 serde = { version = "1", features = ["derive"] }
 round-based = { version = "0.4.1", features = ["runtime-tokio", "derive"] }
 thiserror = "2"
