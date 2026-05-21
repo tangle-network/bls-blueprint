@@ -5,7 +5,7 @@ description = "A BLS Blueprint that can run keygen and signing jobs on demand fr
 edition = "2024"
 
 [dependencies]
-blueprint-sdk = { version = "0.2.0-alpha.6", default-features = false, features = [
+blueprint-sdk = { version = "0.2.0-alpha.7", default-features = false, features = [
     "std",
     "tracing",
     "macros",
@@ -32,7 +32,7 @@ snowbridge-milagro-bls = "1.5"
 gennaro-dkg = { version = "1.0.0-rc6", default-features = false, features = ["bls"] }
 
 [dev-dependencies]
-blueprint-sdk = { version = "0.2.0-alpha.6", default-features = false, features = ["std", "tangle", "testing", "networking", "round-based-compat"] }
+blueprint-sdk = { version = "0.2.0-alpha.7", default-features = false, features = ["std", "tangle", "testing", "networking", "round-based-compat"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tracing-subscriber = "0.3"
 
