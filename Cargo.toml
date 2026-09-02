@@ -27,7 +27,7 @@ tokio = { version = "1", default-features = false, features = ["sync", "rt"] }
 futures = "0.3"
 
 # MPC specific deps
-blsful = "3.1"
+blsful = "4.0"
 snowbridge-milagro-bls = "1.5"
 gennaro-dkg = { version = "1.0.0-rc6", default-features = false, features = ["bls"] }
 
