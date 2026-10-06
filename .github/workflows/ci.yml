@@ -13,7 +13,7 @@ concurrency:
 jobs:
   fmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
   lint:
     timeout-minutes: 120
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     steps:
       - name: checkout code
         uses: actions/checkout@v4
@@ -44,9 +44,6 @@ jobs:
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
 
-      - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -58,15 +55,13 @@ jobs:
       - name: Forge build
         run: forge update && forge build
 
-      - uses: taiki-e/github-actions/free-device-space@main
-
       - name: Run Clippy
         run: cargo clippy --tests --examples -- -D warnings
 
   test:
     timeout-minutes: 90
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ci-public]
     env:
       RUST_LOG: "build-output=debug,info"
     steps:
@@ -84,9 +79,6 @@ jobs:
       - name: Install Solidity Dependencies
         run: forge soldeer update -d
 
-      - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
@@ -99,8 +91,6 @@ jobs:
 
       - name: Forge build
         run: forge update && forge build
-
-      - uses: taiki-e/github-actions/free-device-space@main
 
       - name: build
         run: cargo build --tests
