@@ -7,13 +7,12 @@ use ark_serialize::{
     CanonicalDeserialize, CanonicalDeserializeWithFlags, CanonicalSerialize,
     CanonicalSerializeWithFlags, Compress, Flags, Read, SerializationError, Valid, Validate, Write,
 };
-use blst::blst_uint64_from_fr;
+use core::iter;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use core::str::FromStr;
-use ff::{Field, PrimeField};
+use ff_013::{Field, PrimeField};
 use num_bigint::BigUint;
 use num_traits::Num;
-use std::iter;
 use subtle::ConstantTimeEq;
 
 use crate::Scalar;
@@ -192,18 +191,18 @@ impl FftField for Scalar {
     const GENERATOR: Self = <Self as PrimeField>::MULTIPLICATIVE_GENERATOR;
     const TWO_ADICITY: u32 = <Self as PrimeField>::S;
     const TWO_ADIC_ROOT_OF_UNITY: Self = Self::from_raw_unchecked([
-        0xb9b58d8c5f0e466au64,
-        0x5b1b4c801819d7ecu64,
-        0x0af53ae352a31e64u64,
-        0x5bf3adda19e9b27bu64,
+        0x3829971f439f0d2bu64,
+        0xb63683508c2280b9u64,
+        0xd09b681922c813b4u64,
+        0x16a2a19edfe81f20u64,
     ]);
     const SMALL_SUBGROUP_BASE: Option<u32> = Some(3);
     const SMALL_SUBGROUP_BASE_ADICITY: Option<u32> = Some(1);
     const LARGE_SUBGROUP_ROOT_OF_UNITY: Option<Self> = Some(Self::from_raw_unchecked([
-        0xc3bd1fc0baafea0c,
-        0x15e3d3605ecb5af5,
-        0xac35740580d62e80,
-        0x5a86e0353b85f530,
+        0x02b93785357e7917,
+        0x85aedb297ca15150,
+        0xea45ce5f9f533109,
+        0x3c1d00c4965f33c8,
     ]));
 }
 
@@ -264,7 +263,7 @@ impl ArkPrimeField for Scalar {
         0x94ce_bea4_199c_ec04,
         0x0000_0000_39f6_d3a9,
     ]);
-    const MODULUS_BIT_SIZE: u32 = 255;
+    const MODULUS_BIT_SIZE: u32 = super::MODULUS_BITS;
     const TRACE: Self::BigInt = BigInteger256::new([
         0xfffe5bfeffffffff,
         0x09a1d80553bda402,
@@ -287,9 +286,8 @@ impl ArkPrimeField for Scalar {
     }
 
     fn into_bigint(self) -> Self::BigInt {
-        let mut out = [0u64; 4];
-        unsafe { blst_uint64_from_fr(out.as_mut_ptr(), &self.0) };
-        BigInteger256::new(out)
+        let tmp = Self::montgomery_reduce(self.0[0], self.0[1], self.0[2], self.0[3], 0, 0, 0, 0);
+        BigInteger256::new(tmp.0)
     }
 }
 
@@ -327,11 +325,11 @@ impl ArkField for Scalar {
     }
 
     fn double(&self) -> Self {
-        elliptic_curve::Field::double(self)
+        self.double()
     }
 
     fn double_in_place(&mut self) -> &mut Self {
-        *self = elliptic_curve::Field::double(self);
+        *self = self.double();
         self
     }
 
@@ -347,15 +345,12 @@ impl ArkField for Scalar {
 
     fn legendre(&self) -> LegendreSymbol {
         // s = self^((MODULUS - 1) // 2)
-        let s = elliptic_curve::Field::pow(
-            self,
-            &[
-                0x7fff_2dff_7fff_ffff,
-                0x04d0_ec02_a9de_d201,
-                0x94ce_bea4_199c_ec04,
-                0x0000_0000_39f6_d3a9,
-            ],
-        );
+        let s = self.pow(&[
+            0x7fff_2dff_7fff_ffff,
+            0x04d0_ec02_a9de_d201,
+            0x94ce_bea4_199c_ec04,
+            0x0000_0000_39f6_d3a9,
+        ]);
         if s.ct_eq(&Self::ZERO).into() {
             LegendreSymbol::Zero
         } else if s.ct_eq(&Self::ONE).into() {
@@ -366,11 +361,11 @@ impl ArkField for Scalar {
     }
 
     fn square(&self) -> Self {
-        elliptic_curve::Field::square(self)
+        self.square()
     }
 
     fn square_in_place(&mut self) -> &mut Self {
-        *self = elliptic_curve::Field::square(self);
+        *self = self.square();
         self
     }
 

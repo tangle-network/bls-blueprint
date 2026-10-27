@@ -50,7 +50,7 @@ path = "tests/jubjub.rs"
 version = "1.0"
 
 [dependencies.blsful]
-version = "3.1"
+version = "4.1"
 optional = true
 
 [dependencies.curve25519-dalek-ml]
