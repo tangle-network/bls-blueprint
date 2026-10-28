@@ -10,14 +10,21 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
+edition = "2024"
+rust-version = "1.87"
 name = "blstrs_plus"
-version = "0.8.18"
+version = "0.9.0"
 authors = [
     "dignifiedquire <me@dignifiedquire.com>",
     "Mike Lodder <redmike7@gmail.com>",
 ]
-description = "High performance implementation of BLS12 381"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "High-performance implementation of BLS12-381"
 homepage = "https://docs.rs/blstrs_plus"
 documentation = "https://docs.rs/blstrs_plus"
 readme = "README.md"
@@ -25,7 +32,7 @@ categories = [
     "cryptography",
     "algorithms",
 ]
-license = "MIT/Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/mikelodder7/blstrs"
 
 [package.metadata.docs.rs]
@@ -34,80 +41,174 @@ rustdoc-args = [
     "katex-header.html",
 ]
 
+[features]
+alloc = [
+    "group_013/alloc",
+    "group/alloc",
+    "elliptic-curve-tools/alloc",
+]
+ark = [
+    "ark-bls12-381",
+    "ark-ec",
+    "ark-ff",
+    "ark-serialize",
+    "num-bigint",
+    "num-traits",
+    "rand",
+    "std",
+]
+bits = [
+    "ff_013/bits",
+    "ff/bits",
+]
+default = [
+    "groups",
+    "pairings",
+    "alloc",
+    "bits",
+]
+expose-fields = ["groups"]
+groups = [
+    "group_013",
+    "group",
+]
+pairings = [
+    "groups",
+    "pairing",
+]
+std = []
+
+[lib]
+name = "blstrs_plus"
+crate-type = ["rlib"]
+path = "src/lib.rs"
+
+[[test]]
+name = "ark"
+path = "tests/ark.rs"
+
+[[test]]
+name = "compat_014"
+path = "tests/compat_014.rs"
+
+[[test]]
+name = "wasm"
+path = "tests/wasm.rs"
+
+[[bench]]
+name = "groups"
+path = "benches/groups.rs"
+harness = false
+required-features = ["groups"]
+
 [dependencies.ark-bls12-381]
-version = "0.4.0"
+version = "0.4"
 optional = true
 
 [dependencies.ark-ec]
-version = "0.4.2"
+version = "0.4"
 optional = true
 
 [dependencies.ark-ff]
-version = "0.4.2"
+version = "0.4"
 optional = true
 
 [dependencies.ark-serialize]
-version = "0.4.2"
+version = "0.4"
 optional = true
 
 [dependencies.arrayref]
 version = "0.3"
 
-[dependencies.blst]
-version = "0.3"
-
 [dependencies.elliptic-curve]
-version = "0.13"
-features = ["hazmat"]
+version = "0.14.1"
+features = ["arithmetic"]
 default-features = false
 
-[dependencies.elliptic-curve-tools]
+# bls-blueprint: gennaro-dkg 1.0.0-rc6 needs elliptic-curve-tools 0.2's SumOfProducts on G1Projective.
+[dependencies.elliptic-curve-tools-02]
 version = "0.2"
 default-features = false
+package = "elliptic-curve-tools"
+
+[dependencies.elliptic-curve-tools]
+version = "0.3.0"
+features = ["legacy"]
+optional = true
+default-features = false
+
+[dependencies.elliptic_curve_013]
+version = "0.13.8"
+features = [
+    "hash2curve",
+    "hazmat",
+]
+default-features = false
+package = "elliptic-curve"
 
 [dependencies.ff]
-version = "0.13"
+version = "0.14.0"
+default-features = false
+
+[dependencies.ff_013]
+version = "0.13.1"
+default-features = false
+package = "ff"
 
 [dependencies.group]
-version = "0.13"
-features = ["tests"]
+version = "0.14.0"
+optional = true
+default-features = false
+
+[dependencies.group_013]
+version = "0.13.0"
+optional = true
+default-features = false
+package = "group"
+
+[dependencies.hex]
+version = "0.4"
+default-features = false
 
 [dependencies.num-bigint]
-version = "0.4.5"
+version = "0.4"
 optional = true
 
 [dependencies.num-traits]
-version = "0.2.19"
+version = "0.2"
 optional = true
 
-[dependencies.pairing_lib]
-version = "0.23"
-package = "pairing"
+[dependencies.pairing]
+version = "0.23.0"
+optional = true
 
 [dependencies.rand]
 version = "0.8"
 optional = true
 
 [dependencies.rand_core]
-version = "0.6"
+version = "0.6.4"
+default-features = false
 
 [dependencies.serde]
 version = "1.0"
-features = ["derive"]
-optional = true
+features = ["serde_derive"]
+default-features = false
+
+[dependencies.sha2]
+version = "0.10"
+default-features = false
 
 [dependencies.subtle]
 version = "2.5"
+default-features = false
 
 [dependencies.zeroize]
-version = "1"
-features = ["zeroize_derive"]
+version = "1.8"
+default-features = false
 
 [dev-dependencies.ark-poly]
 version = "0.4.2"
-
-[dev-dependencies.bls12_381_plus]
-version = "0.8"
 
 [dev-dependencies.hex]
 version = "0.4"
@@ -124,20 +225,11 @@ version = "1.0"
 [dev-dependencies.sha2]
 version = "0.10"
 
-[features]
-__private_bench = []
-ark = [
-    "ark-bls12-381",
-    "ark-ec",
-    "ark-ff",
-    "ark-serialize",
-    "num-bigint",
-    "num-traits",
-    "rand",
-]
-default = [
-    "hashing",
-    "serde",
-]
-hashing = ["elliptic-curve/hash2curve"]
-portable = ["blst/portable"]
+[dev-dependencies.sha3]
+version = "0.10"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.criterion]
+version = "0.8.2"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies.wasm-bindgen-test]
+version = "0.3"

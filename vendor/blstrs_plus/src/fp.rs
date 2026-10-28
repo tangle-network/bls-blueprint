@@ -1,366 +1,39 @@
 //! This module provides an implementation of the BLS12-381 base field `GF(p)`
 //! where `p = 0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab`
 
-use blst::*;
-
-use core::{
-    cmp, fmt,
-    ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+use crate::G1Projective;
+use core::convert::TryFrom;
+use core::fmt;
+use core::iter::{Iterator, Product, Sum};
+use core::ops::{Add, AddAssign, BitOr, Mul, MulAssign, Neg, Sub, SubAssign};
+use elliptic_curve_013::{
+    bigint::{ByteArray, U512},
+    consts::U16,
+    hash2curve::{
+        ExpandMsg, Expander, FromOkm, Isogeny, IsogenyCoefficients, MapToCurve, OsswuMap,
+        OsswuMapParams, Sgn0,
+    },
 };
-#[cfg(feature = "hashing")]
-use elliptic_curve::hash2curve::{ExpandMsg, Expander};
-use ff::Field;
+use ff_013::Field;
 use rand_core::RngCore;
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, CtOption};
+use subtle::{Choice, ConditionallyNegatable, ConditionallySelectable, ConstantTimeEq, CtOption};
 
-use crate::fp2::Fp2;
+use crate::util::{adc, mac, sbb};
 
-// Little-endian non-Montgomery form.
-#[allow(dead_code)]
-const MODULUS: [u64; 6] = [
-    0xb9fe_ffff_ffff_aaab,
-    0x1eab_fffe_b153_ffff,
-    0x6730_d2a0_f6b0_f624,
-    0x6477_4b84_f385_12bf,
-    0x4b1b_a7b6_434b_acd7,
-    0x1a01_11ea_397f_e69a,
-];
-
-// Little-endian non-Montgomery form.
-const MODULUS_REPR: [u8; 48] = [
-    0xab, 0xaa, 0xff, 0xff, 0xff, 0xff, 0xfe, 0xb9, 0xff, 0xff, 0x53, 0xb1, 0xfe, 0xff, 0xab, 0x1e,
-    0x24, 0xf6, 0xb0, 0xf6, 0xa0, 0xd2, 0x30, 0x67, 0xbf, 0x12, 0x85, 0xf3, 0x84, 0x4b, 0x77, 0x64,
-    0xd7, 0xac, 0x4b, 0x43, 0xb6, 0xa7, 0x1b, 0x4b, 0x9a, 0xe6, 0x7f, 0x39, 0xea, 0x11, 0x01, 0x1a,
-];
-
-const ZERO: Fp = Fp(blst_fp {
-    l: [0, 0, 0, 0, 0, 0],
-});
-
-/// R = 2^384 mod p
-const R: Fp = Fp(blst_fp {
-    l: [
-        0x7609_0000_0002_fffd,
-        0xebf4_000b_c40c_0002,
-        0x5f48_9857_53c7_58ba,
-        0x77ce_5853_7052_5745,
-        0x5c07_1a97_a256_ec6d,
-        0x15f6_5ec3_fa80_e493,
-    ],
-});
-
-/// R2 = 2^(384*2) mod p
-#[allow(dead_code)]
-const R2: Fp = Fp(blst_fp {
-    l: [
-        0xf4df_1f34_1c34_1746,
-        0x0a76_e6a6_09d1_04f1,
-        0x8de5_476c_4c95_b6d5,
-        0x67eb_88a9_939d_83c0,
-        0x9a79_3e85_b519_952d,
-        0x1198_8fe5_92ca_e3aa,
-    ],
-});
-
-#[cfg(feature = "hashing")]
-/// R3 = 2^(384*3) mod p
-const R3: Fp = Fp(blst_fp {
-    l: [
-        0xed48_ac6b_d94c_a1e0,
-        0x315f_831e_03a7_adf8,
-        0x9a53_352a_615e_29dd,
-        0x34c0_4e5e_921e_1761,
-        0x2512_d435_6572_4728,
-        0x0aa6_3460_9175_5d4d,
-    ],
-});
-
-/// `Fp` values are always in Montgomery form; i.e., Fp(a) = aR mod p, with R = 2^384. `blst_fp.l`
-/// is in little-endian `u64` limbs format.
+/// The internal representation of this type is six 64-bit unsigned
+/// integers in little-endian order. `Fp` values are always in
+/// Montgomery form; i.e., Scalar(a) = aR mod p, with R = 2^384.
 #[derive(Copy, Clone)]
-#[repr(transparent)]
-pub struct Fp(pub(crate) blst_fp);
-
-// Coefficients for the Frobenius automorphism.
-pub(crate) const FROBENIUS_COEFF_FP2_C1: [Fp; 2] = [
-    // Fp(-1)**(((q^0) - 1) / 2)
-    Fp(blst_fp {
-        l: [
-            0x760900000002fffd,
-            0xebf4000bc40c0002,
-            0x5f48985753c758ba,
-            0x77ce585370525745,
-            0x5c071a97a256ec6d,
-            0x15f65ec3fa80e493,
-        ],
-    }),
-    // Fp(-1)**(((q^1) - 1) / 2)
-    Fp(blst_fp {
-        l: [
-            0x43f5fffffffcaaae,
-            0x32b7fff2ed47fffd,
-            0x7e83a49a2e99d69,
-            0xeca8f3318332bb7a,
-            0xef148d1ea0f4c069,
-            0x40ab3263eff0206,
-        ],
-    }),
-];
-
-pub const FROBENIUS_COEFF_FP6_C1: [Fp2; 6] = [
-    // Fp2(u + 1)**(((q^0) - 1) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0x760900000002fffd,
-                0xebf4000bc40c0002,
-                0x5f48985753c758ba,
-                0x77ce585370525745,
-                0x5c071a97a256ec6d,
-                0x15f65ec3fa80e493,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((q^1) - 1) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-        Fp(blst_fp {
-            l: [
-                0xcd03c9e48671f071,
-                0x5dab22461fcda5d2,
-                0x587042afd3851b95,
-                0x8eb60ebe01bacb9e,
-                0x3f97d6e83d050d2,
-                0x18f0206554638741,
-            ],
-        }),
-    ),
-    // Fp2(u + 1)**(((q^2) - 1) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0x30f1361b798a64e8,
-                0xf3b8ddab7ece5a2a,
-                0x16a8ca3ac61577f7,
-                0xc26a2ff874fd029b,
-                0x3636b76660701c6e,
-                0x51ba4ab241b6160,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((q^3) - 1) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-        Fp(blst_fp {
-            l: [
-                0x760900000002fffd,
-                0xebf4000bc40c0002,
-                0x5f48985753c758ba,
-                0x77ce585370525745,
-                0x5c071a97a256ec6d,
-                0x15f65ec3fa80e493,
-            ],
-        }),
-    ),
-    // Fp2(u + 1)**(((q^4) - 1) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0xcd03c9e48671f071,
-                0x5dab22461fcda5d2,
-                0x587042afd3851b95,
-                0x8eb60ebe01bacb9e,
-                0x3f97d6e83d050d2,
-                0x18f0206554638741,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((q^5) - 1) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-        Fp(blst_fp {
-            l: [
-                0x30f1361b798a64e8,
-                0xf3b8ddab7ece5a2a,
-                0x16a8ca3ac61577f7,
-                0xc26a2ff874fd029b,
-                0x3636b76660701c6e,
-                0x51ba4ab241b6160,
-            ],
-        }),
-    ),
-];
-
-pub const FROBENIUS_COEFF_FP6_C2: [Fp2; 6] = [
-    // Fp2(u + 1)**(((2q^0) - 2) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0x760900000002fffd,
-                0xebf4000bc40c0002,
-                0x5f48985753c758ba,
-                0x77ce585370525745,
-                0x5c071a97a256ec6d,
-                0x15f65ec3fa80e493,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((2q^1) - 2) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0x890dc9e4867545c3,
-                0x2af322533285a5d5,
-                0x50880866309b7e2c,
-                0xa20d1b8c7e881024,
-                0x14e4f04fe2db9068,
-                0x14e56d3f1564853a,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((2q^2) - 2) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0xcd03c9e48671f071,
-                0x5dab22461fcda5d2,
-                0x587042afd3851b95,
-                0x8eb60ebe01bacb9e,
-                0x3f97d6e83d050d2,
-                0x18f0206554638741,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((2q^3) - 2) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0x43f5fffffffcaaae,
-                0x32b7fff2ed47fffd,
-                0x7e83a49a2e99d69,
-                0xeca8f3318332bb7a,
-                0xef148d1ea0f4c069,
-                0x40ab3263eff0206,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((2q^4) - 2) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0x30f1361b798a64e8,
-                0xf3b8ddab7ece5a2a,
-                0x16a8ca3ac61577f7,
-                0xc26a2ff874fd029b,
-                0x3636b76660701c6e,
-                0x51ba4ab241b6160,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-    // Fp2(u + 1)**(((2q^5) - 2) / 3)
-    Fp2::new(
-        Fp(blst_fp {
-            l: [
-                0xecfb361b798dba3a,
-                0xc100ddb891865a2c,
-                0xec08ff1232bda8e,
-                0xd5c13cc6f1ca4721,
-                0x47222a47bf7b5c04,
-                0x110f184e51c5f59,
-            ],
-        }),
-        Fp(blst_fp {
-            l: [0x0, 0x0, 0x0, 0x0, 0x0, 0x0],
-        }),
-    ),
-];
-
-impl From<u64> for Fp {
-    fn from(val: u64) -> Fp {
-        let mut repr = [0u8; 48];
-        repr[..8].copy_from_slice(&val.to_le_bytes());
-        Self::from_bytes_le(&repr).unwrap()
-    }
-}
-
-impl Ord for Fp {
-    #[allow(clippy::comparison_chain)]
-    fn cmp(&self, other: &Fp) -> cmp::Ordering {
-        for (a, b) in self.to_bytes_be().iter().zip(other.to_bytes_be().iter()) {
-            if a > b {
-                return cmp::Ordering::Greater;
-            } else if a < b {
-                return cmp::Ordering::Less;
-            }
-        }
-        cmp::Ordering::Equal
-    }
-}
-
-impl PartialOrd for Fp {
-    #[inline(always)]
-    fn partial_cmp(&self, other: &Fp) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
+pub struct Fp(pub [u64; 6]);
 
 impl fmt::Debug for Fp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let be_bytes = self.to_bytes_be();
-        write!(f, "Fp(0x")?;
-        for &b in be_bytes.iter() {
+        let tmp = self.to_bytes();
+        write!(f, "0x")?;
+        for &b in tmp.iter() {
             write!(f, "{:02x}", b)?;
         }
-        write!(f, ")")?;
         Ok(())
-    }
-}
-
-impl fmt::Display for Fp {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl From<Fp> for blst_fp {
-    fn from(val: Fp) -> blst_fp {
-        val.0
-    }
-}
-
-impl From<blst_fp> for Fp {
-    fn from(val: blst_fp) -> Fp {
-        Fp(val)
     }
 }
 
@@ -370,49 +43,95 @@ impl Default for Fp {
     }
 }
 
-impl Eq for Fp {}
-
-impl PartialEq for Fp {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.ct_eq(other).into()
-    }
-}
+impl zeroize::DefaultIsZeroes for Fp {}
 
 impl ConstantTimeEq for Fp {
     fn ct_eq(&self, other: &Self) -> Choice {
-        self.0.l[0].ct_eq(&other.0.l[0])
-            & self.0.l[1].ct_eq(&other.0.l[1])
-            & self.0.l[2].ct_eq(&other.0.l[2])
-            & self.0.l[3].ct_eq(&other.0.l[3])
-            & self.0.l[4].ct_eq(&other.0.l[4])
-            & self.0.l[5].ct_eq(&other.0.l[5])
+        self.0[0].ct_eq(&other.0[0])
+            & self.0[1].ct_eq(&other.0[1])
+            & self.0[2].ct_eq(&other.0[2])
+            & self.0[3].ct_eq(&other.0[3])
+            & self.0[4].ct_eq(&other.0[4])
+            & self.0[5].ct_eq(&other.0[5])
+    }
+}
+
+impl Eq for Fp {}
+impl PartialEq for Fp {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        bool::from(self.ct_eq(other))
+    }
+}
+
+impl core::hash::Hash for Fp {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
     }
 }
 
 impl ConditionallySelectable for Fp {
     fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
-        Fp(blst_fp {
-            l: [
-                u64::conditional_select(&a.0.l[0], &b.0.l[0], choice),
-                u64::conditional_select(&a.0.l[1], &b.0.l[1], choice),
-                u64::conditional_select(&a.0.l[2], &b.0.l[2], choice),
-                u64::conditional_select(&a.0.l[3], &b.0.l[3], choice),
-                u64::conditional_select(&a.0.l[4], &b.0.l[4], choice),
-                u64::conditional_select(&a.0.l[5], &b.0.l[5], choice),
-            ],
-        })
+        Fp([
+            u64::conditional_select(&a.0[0], &b.0[0], choice),
+            u64::conditional_select(&a.0[1], &b.0[1], choice),
+            u64::conditional_select(&a.0[2], &b.0[2], choice),
+            u64::conditional_select(&a.0[3], &b.0[3], choice),
+            u64::conditional_select(&a.0[4], &b.0[4], choice),
+            u64::conditional_select(&a.0[5], &b.0[5], choice),
+        ])
     }
 }
+
+/// p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787
+pub(crate) const MODULUS: [u64; 6] = [
+    0xb9fe_ffff_ffff_aaab,
+    0x1eab_fffe_b153_ffff,
+    0x6730_d2a0_f6b0_f624,
+    0x6477_4b84_f385_12bf,
+    0x4b1b_a7b6_434b_acd7,
+    0x1a01_11ea_397f_e69a,
+];
+
+/// INV = -(p^{-1} mod 2^64) mod 2^64
+const INV: u64 = 0x89f3_fffc_fffc_fffd;
+
+/// R = 2^384 mod p
+const R: Fp = Fp([
+    0x7609_0000_0002_fffd,
+    0xebf4_000b_c40c_0002,
+    0x5f48_9857_53c7_58ba,
+    0x77ce_5853_7052_5745,
+    0x5c07_1a97_a256_ec6d,
+    0x15f6_5ec3_fa80_e493,
+]);
+
+/// R2 = 2^(384*2) mod p
+const R2: Fp = Fp([
+    0xf4df_1f34_1c34_1746,
+    0x0a76_e6a6_09d1_04f1,
+    0x8de5_476c_4c95_b6d5,
+    0x67eb_88a9_939d_83c0,
+    0x9a79_3e85_b519_952d,
+    0x1198_8fe5_92ca_e3aa,
+]);
+
+/// R3 = 2^(384*3) mod p
+const R3: Fp = Fp([
+    0xed48_ac6b_d94c_a1e0,
+    0x315f_831e_03a7_adf8,
+    0x9a53_352a_615e_29dd,
+    0x34c0_4e5e_921e_1761,
+    0x2512_d435_6572_4728,
+    0x0aa6_3460_9175_5d4d,
+]);
 
 impl Neg for &Fp {
     type Output = Fp;
 
     #[inline]
     fn neg(self) -> Fp {
-        let mut out = *self;
-        unsafe { blst_fp_cneg(&mut out.0, &self.0, true) };
-        out
+        self.neg()
     }
 }
 
@@ -420,262 +139,342 @@ impl Neg for Fp {
     type Output = Fp;
 
     #[inline]
-    fn neg(mut self) -> Fp {
-        unsafe { blst_fp_cneg(&mut self.0, &self.0, true) };
-        self
+    fn neg(self) -> Fp {
+        -&self
     }
 }
 
-impl Sub<&Fp> for &Fp {
+impl<'b> Sub<&'b Fp> for &Fp {
     type Output = Fp;
 
     #[inline]
-    fn sub(self, rhs: &Fp) -> Fp {
-        let mut out = *self;
-        out -= rhs;
-        out
+    fn sub(self, rhs: &'b Fp) -> Fp {
+        self.sub(rhs)
     }
 }
 
-impl Add<&Fp> for &Fp {
+impl<'b> Add<&'b Fp> for &Fp {
     type Output = Fp;
 
     #[inline]
-    fn add(self, rhs: &Fp) -> Fp {
-        let mut out = *self;
-        out += rhs;
-        out
+    fn add(self, rhs: &'b Fp) -> Fp {
+        self.add(rhs)
     }
 }
 
-impl Mul<&Fp> for &Fp {
+impl<'b> Mul<&'b Fp> for &Fp {
     type Output = Fp;
 
     #[inline]
-    fn mul(self, rhs: &Fp) -> Fp {
-        let mut out = *self;
-        out *= rhs;
-        out
+    fn mul(self, rhs: &'b Fp) -> Fp {
+        self.mul(rhs)
     }
 }
 
-impl AddAssign<&Fp> for Fp {
-    #[inline]
-    fn add_assign(&mut self, rhs: &Fp) {
-        unsafe { blst_fp_add(&mut self.0, &self.0, &rhs.0) };
+impl_binops_additive!(Fp, Fp);
+impl_binops_multiplicative!(Fp, Fp);
+
+impl FromOkm for Fp {
+    type Length = <U512 as elliptic_curve_013::bigint::ArrayEncoding>::ByteSize;
+
+    fn from_okm(data: &ByteArray<U512>) -> Self {
+        let input = arrayref::array_ref![data, 0, 64];
+        Self::from_random_bytes(*input)
     }
 }
 
-impl SubAssign<&Fp> for Fp {
-    #[inline]
-    fn sub_assign(&mut self, rhs: &Fp) {
-        unsafe { blst_fp_sub(&mut self.0, &self.0, &rhs.0) };
+impl Sgn0 for Fp {
+    fn sgn0(&self) -> Choice {
+        let bytes = self.to_bytes();
+        (bytes[47] & 1).into()
     }
 }
 
-impl MulAssign<&Fp> for Fp {
-    #[inline]
-    fn mul_assign(&mut self, rhs: &Fp) {
-        unsafe { blst_fp_mul(&mut self.0, &self.0, &rhs.0) };
+impl OsswuMap for Fp {
+    const PARAMS: OsswuMapParams<Self> = OsswuMapParams {
+        c1: &[
+            0xee7f_bfff_ffff_eaaau64,
+            0x07aa_ffff_ac54_ffffu64,
+            0xd9cc_34a8_3dac_3d89u64,
+            0xd91d_d2e1_3ce1_44afu64,
+            0x92c6_e9ed_90d2_eb35u64,
+            0x0680_447a_8e5f_f9a6u64,
+        ],
+        c2: Fp([
+            0x43b5_71ca_d321_5f1fu64,
+            0xccb4_60ef_1c70_2dc2u64,
+            0x742d_884f_4f97_100bu64,
+            0xdb2c_3e32_38a3_382bu64,
+            0xe40f_3fa1_3fce_8f88u64,
+            0x0073_a2af_9892_a2ffu64,
+        ]),
+        map_a: Fp([
+            0x2f65_aa0e_9af5_aa51u64,
+            0x8646_4c2d_1e84_16c3u64,
+            0xb85c_e591_b7bd_31e2u64,
+            0x27e1_1c91_b5f2_4e7cu64,
+            0x2837_6eda_6bfc_1835u64,
+            0x1554_55c3_e507_1d85u64,
+        ]),
+        map_b: Fp([
+            0xfb99_6971_fe22_a1e0u64,
+            0x9aa9_3eb3_5b74_2d6fu64,
+            0x8c47_6013_de99_c5c4u64,
+            0x873e_27c3_a221_e571u64,
+            0xca72_b5e4_5a52_d888u64,
+            0x0682_4061_418a_386bu64,
+        ]),
+        z: Fp([
+            0x886c00000023ffdcu64,
+            0xf70008d3090001du64,
+            0x77672417ed5828c3u64,
+            0x9dac23e943dc1740u64,
+            0x50553f1b9c131521u64,
+            0x78c712fbe0ab6e8u64,
+        ]),
+    };
+
+    fn osswu(&self) -> (Self, Self) {
+        let xd1 = Self::PARAMS.z.mul(&Self::PARAMS.map_a);
+
+        // tv1 = u^2
+        let tv1 = self.square();
+        // tv3 = Z * tv1
+        let tv3 = Self::PARAMS.z * tv1;
+        // tv2 = tv3^2
+        let mut tv2 = tv3.square();
+        // xd = tv2 + tv3
+        let mut xd = tv2 + tv3;
+        // x1n = xd + 1
+        // x1n = x1n * B
+        let x1n = (xd + Fp::ONE) * Self::PARAMS.map_b;
+        // xd = -A * xd
+        xd *= Self::PARAMS.map_a.neg();
+        // xd = CMOV(xd, Z * A, xd == 0)
+        xd.conditional_assign(&xd1, xd.is_zero());
+        // tv2 = xd^2
+        tv2 = xd.square();
+        let gxd = tv2 * xd;
+        tv2 *= Self::PARAMS.map_a;
+        let mut gx1 = (x1n.square() + tv2) * x1n;
+        tv2 = Self::PARAMS.map_b * gxd;
+        gx1 += tv2;
+        let mut tv4 = gxd.square();
+        tv2 = gx1 * gxd;
+        tv4 *= tv2;
+        let y1 = tv4.pow_vartime(arrayref::array_ref![Self::PARAMS.c1, 0, 6]) * tv2;
+        let mut x2n = tv3 * x1n;
+        let mut y2 = y1 * Self::PARAMS.c2 * tv1 * self;
+        tv2 = y1.square() * gxd;
+        let e2 = ((tv2 == gx1) as u8).into();
+
+        x2n.conditional_assign(&x1n, e2);
+        y2.conditional_assign(&y1, e2);
+
+        let e3 = self.sgn0() ^ y2.sgn0();
+        y2.conditional_negate(e3);
+
+        (x2n * xd.invert().unwrap(), y2)
     }
 }
 
-impl_add_sub!(Fp);
-impl_add_sub_assign!(Fp);
-impl_mul!(Fp);
-impl_mul_assign!(Fp);
-impl_sum!(Fp);
-impl_product!(Fp);
+impl MapToCurve for Fp {
+    type Output = G1Projective;
 
-// Returns `true` if  `le_bytes` is less than the modulus (both are in non-Montgomery form).
-#[allow(clippy::comparison_chain)]
-fn is_valid(le_bytes: &[u8; 48]) -> bool {
-    for (a, b) in le_bytes.iter().zip(MODULUS_REPR.iter()).rev() {
-        if a > b {
-            return false;
-        } else if a < b {
-            return true;
+    fn map_to_curve(&self) -> Self::Output {
+        let (rx, ry) = self.osswu();
+        let (qx, qy) = Fp::isogeny(rx, ry);
+        G1Projective {
+            x: qx,
+            y: qy,
+            z: Fp::ONE,
         }
     }
-    // false if matching the modulus
-    false
 }
 
-// Returns `true` if  `le_bytes` is less than the modulus (both are in non-Montgomery form).
-#[allow(clippy::comparison_chain)]
-fn is_valid_u64(le_bytes: &[u64; 6]) -> bool {
-    for (a, b) in le_bytes.iter().zip(MODULUS.iter()).rev() {
-        if a > b {
-            return false;
-        } else if a < b {
-            return true;
-        }
-    }
-    // false if matching the modulus
-    false
+impl Isogeny for Fp {
+    type Degree = U16;
+    const COEFFICIENTS: IsogenyCoefficients<Self> = IsogenyCoefficients {
+        xnum: &crate::isogeny::g1::XNUM,
+        xden: &crate::isogeny::g1::XDEN,
+        ynum: &crate::isogeny::g1::YNUM,
+        yden: &crate::isogeny::g1::YDEN,
+    };
 }
-
-const NUM_BITS: u32 = 381;
-/// The number of bits we should "shave" from a randomly sampled reputation.
-const REPR_SHAVE_BITS: usize = 384 - NUM_BITS as usize;
 
 impl Field for Fp {
-    fn random(mut rng: impl RngCore) -> Self {
-        loop {
-            let mut raw = [0u64; 6];
-            for int in raw.iter_mut() {
-                *int = rng.next_u64();
-            }
+    const ZERO: Self = Fp::ZERO;
+    const ONE: Self = Fp::ONE;
 
-            // Mask away the unused most-significant bits.
-            raw[5] &= 0xffffffffffffffff >> REPR_SHAVE_BITS;
-
-            if let Some(fp) = Fp::from_raw(&raw).into() {
-                return fp;
-            }
-        }
-    }
-
-    const ZERO: Self = ZERO;
-
-    // Returns `1 mod p` in Montgomery form `1 * R mod p`;
-    const ONE: Self = R;
-
-    fn is_zero(&self) -> Choice {
-        self.ct_eq(&ZERO)
+    fn random(rng: impl RngCore) -> Self {
+        Fp::random(rng)
     }
 
     fn square(&self) -> Self {
-        let mut sq = *self;
-        unsafe { blst_fp_sqr(&mut sq.0, &self.0) }
-        sq
+        self.square()
     }
 
     fn double(&self) -> Self {
-        let mut out = *self;
-        out += self;
-        out
+        self.double()
     }
 
     fn invert(&self) -> CtOption<Self> {
-        let mut inv = Self::default();
-        unsafe { blst_fp_eucl_inverse(&mut inv.0, &self.0) };
-        let is_invertible = !self.ct_eq(&Fp::ZERO);
-        CtOption::new(inv, is_invertible)
-    }
-
-    fn sqrt(&self) -> CtOption<Self> {
-        let mut out = Self::default();
-        let is_quad_res = unsafe { blst_fp_sqrt(&mut out.0, &self.0) };
-        CtOption::new(out, Choice::from(is_quad_res as u8))
+        self.invert()
     }
 
     fn sqrt_ratio(_num: &Self, _div: &Self) -> (Choice, Self) {
-        // ff::helpers::sqrt_ratio_generic(num, div)
+        // ff_013::helpers::sqrt_ratio_generic(num, div)
         unimplemented!()
     }
 }
 
+impl From<u64> for Fp {
+    fn from(value: u64) -> Self {
+        Self([value, 0, 0, 0, 0, 0]) * R2
+    }
+}
+
+impl Sum<Fp> for Fp {
+    fn sum<I: Iterator<Item = Fp>>(iter: I) -> Self {
+        let mut result = Fp::ZERO;
+        for f in iter {
+            result += f;
+        }
+        result
+    }
+}
+
+impl<'a> Sum<&'a Fp> for Fp {
+    fn sum<I: Iterator<Item = &'a Fp>>(iter: I) -> Self {
+        let mut result = Fp::ZERO;
+        for f in iter {
+            result += f;
+        }
+        result
+    }
+}
+
+impl Product<Fp> for Fp {
+    fn product<I: Iterator<Item = Fp>>(iter: I) -> Self {
+        let mut result = Fp::ONE;
+        for f in iter {
+            result *= f;
+        }
+        result
+    }
+}
+
+impl<'a> Product<&'a Fp> for Fp {
+    fn product<I: Iterator<Item = &'a Fp>>(iter: I) -> Self {
+        let mut result = Fp::ONE;
+        for f in iter {
+            result *= f;
+        }
+        result
+    }
+}
+
 impl Fp {
-    pub fn char() -> [u8; 48] {
-        MODULUS_REPR
+    /// The additive identity.
+    pub const ZERO: Fp = Fp([0, 0, 0, 0, 0, 0]);
+    /// The multiplicative identity.
+    pub const ONE: Fp = R;
+
+    /// Returns zero, the additive identity.
+    #[inline]
+    #[deprecated(since = "0.5.4", note = "Use ZERO instead.")]
+    pub const fn zero() -> Fp {
+        Fp([0, 0, 0, 0, 0, 0])
     }
 
-    /// Attempts to convert a little-endian byte representation of
-    /// a scalar into an `Fp`, failing if the input is not canonical.
-    pub fn from_bytes_le(bytes: &[u8; 48]) -> CtOption<Fp> {
-        // TODO: constant time
-        let is_some = Choice::from(is_valid(bytes) as u8);
-        let mut out = blst_fp::default();
-        unsafe { blst_fp_from_lendian(&mut out, bytes.as_ptr()) };
+    /// Returns one, the multiplicative identity.
+    #[inline]
+    #[deprecated(since = "0.5.4", note = "Use ONE instead.")]
+    pub const fn one() -> Fp {
+        R
+    }
 
-        CtOption::new(Fp(out), is_some)
+    /// Returns true if field is the additive identity
+    pub fn is_zero(&self) -> Choice {
+        self.ct_eq(&Fp::ZERO)
     }
 
     /// Attempts to convert a big-endian byte representation of
     /// a scalar into an `Fp`, failing if the input is not canonical.
-    pub fn from_bytes_be(be_bytes: &[u8; 48]) -> CtOption<Fp> {
-        let mut le_bytes = *be_bytes;
-        le_bytes.reverse();
-        Self::from_bytes_le(&le_bytes)
-    }
+    pub fn from_bytes(bytes: &[u8; 48]) -> CtOption<Fp> {
+        let mut tmp = Fp([0, 0, 0, 0, 0, 0]);
 
-    /// Converts an element of `Fp` into a byte representation in
-    /// little-endian byte order.
-    pub fn to_bytes_le(&self) -> [u8; 48] {
-        let mut repr = [0u8; 48];
-        unsafe { blst_lendian_from_fp(repr.as_mut_ptr(), &self.0) };
-        repr
+        tmp.0[5] = u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[0..8]).unwrap());
+        tmp.0[4] = u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[8..16]).unwrap());
+        tmp.0[3] = u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[16..24]).unwrap());
+        tmp.0[2] = u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[24..32]).unwrap());
+        tmp.0[1] = u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[32..40]).unwrap());
+        tmp.0[0] = u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[40..48]).unwrap());
+
+        // Try to subtract the modulus
+        let (_, borrow) = sbb(tmp.0[0], MODULUS[0], 0);
+        let (_, borrow) = sbb(tmp.0[1], MODULUS[1], borrow);
+        let (_, borrow) = sbb(tmp.0[2], MODULUS[2], borrow);
+        let (_, borrow) = sbb(tmp.0[3], MODULUS[3], borrow);
+        let (_, borrow) = sbb(tmp.0[4], MODULUS[4], borrow);
+        let (_, borrow) = sbb(tmp.0[5], MODULUS[5], borrow);
+
+        // If the element is smaller than MODULUS then the
+        // subtraction will underflow, producing a borrow value
+        // of 0xffff...ffff. Otherwise, it'll be zero.
+        let is_some = (borrow as u8) & 1;
+
+        // Convert to Montgomery form by computing
+        // (a.R^0 * R^2) / R = a.R
+        tmp *= &R2;
+
+        CtOption::new(tmp, Choice::from(is_some))
     }
 
     /// Converts an element of `Fp` into a byte representation in
     /// big-endian byte order.
-    pub fn to_bytes_be(&self) -> [u8; 48] {
-        let mut bytes = self.to_bytes_le();
-        bytes.reverse();
-        bytes
+    pub fn to_bytes(&self) -> [u8; 48] {
+        // Turn into canonical form by computing
+        // (a.R) / R = a
+        let tmp = Fp::montgomery_reduce(
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5], 0, 0, 0, 0, 0, 0,
+        );
+
+        let mut res = [0; 48];
+        res[0..8].copy_from_slice(&tmp.0[5].to_be_bytes());
+        res[8..16].copy_from_slice(&tmp.0[4].to_be_bytes());
+        res[16..24].copy_from_slice(&tmp.0[3].to_be_bytes());
+        res[24..32].copy_from_slice(&tmp.0[2].to_be_bytes());
+        res[32..40].copy_from_slice(&tmp.0[1].to_be_bytes());
+        res[40..48].copy_from_slice(&tmp.0[0].to_be_bytes());
+
+        res
     }
 
-    /// Constructs an element of `Fp` from a little-endian array of limbs without checking that it
-    /// is canonical and without converting it to Montgomery form (i.e. without multiplying by `R`).
-    pub fn from_raw_unchecked(l: [u64; 6]) -> Fp {
-        Fp(blst_fp { l })
+    /// Create a random field element
+    pub fn random(mut rng: impl RngCore) -> Fp {
+        let mut bytes = [0u8; 96];
+        rng.fill_bytes(&mut bytes);
+
+        // Parse the random bytes as a big-endian number, to match Fp encoding order.
+        Fp::from_u768([
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[0..8]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[8..16]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[16..24]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[24..32]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[32..40]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[40..48]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[48..56]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[56..64]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[64..72]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[72..80]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[80..88]).unwrap()),
+            u64::from_be_bytes(<[u8; 8]>::try_from(&bytes[88..96]).unwrap()),
+        ])
     }
 
-    /// Multiplies `self` with `3`, returning the result.
-    pub fn mul3(&self) -> Self {
-        let mut out = *self;
-        unsafe { blst_fp_mul_by_3(&mut out.0, &self.0) };
-        out
-    }
-
-    /// Multiplies `self` with `8`, returning the result.
-    pub fn mul8(&self) -> Self {
-        let mut out = *self;
-        unsafe { blst_fp_mul_by_8(&mut out.0, &self.0) };
-        out
-    }
-
-    /// Left shift `self` by `count`, returning the result.
-    pub fn shl(&self, count: usize) -> Self {
-        let mut out = *self;
-        unsafe { blst_fp_lshift(&mut out.0, &self.0, count) };
-        out
-    }
-
-    // `u64s` represent a little-endian non-Montgomery form integer mod p.
-    pub fn from_raw(bytes: &[u64; 6]) -> CtOption<Self> {
-        let is_some = Choice::from(is_valid_u64(bytes) as u8);
-        let mut out = blst_fp::default();
-        unsafe { blst_fp_from_uint64(&mut out, bytes.as_ptr()) };
-        CtOption::new(Fp(out), is_some)
-    }
-
-    pub fn num_bits(&self) -> u32 {
-        let mut ret = 384;
-        for i in self.to_bytes_be().iter() {
-            let leading = i.leading_zeros();
-            ret -= leading;
-            if leading != 8 {
-                break;
-            }
-        }
-
-        ret
-    }
-
-    pub fn is_quad_res(&self) -> Choice {
-        self.sqrt().is_some()
-    }
-
-    #[inline]
-    pub fn square_assign(&mut self) {
-        unsafe { blst_fp_sqr(&mut self.0, &self.0) };
-    }
-
-    #[cfg(feature = "hashing")]
     /// Reduces a big-endian 64-bit limb representation of a 768-bit number.
-    fn from_u768(limbs: [u64; 12]) -> Self {
+    fn from_u768(limbs: [u64; 12]) -> Fp {
         // We reduce an arbitrary 768-bit number by decomposing it into two 384-bit digits
         // with the higher bits multiplied by 2^384. Thus, we perform two reductions
         //
@@ -689,17 +488,431 @@ impl Fp {
         // that (2^384 - 1)*c is an acceptable product for the reduction. Therefore, the
         // reduction always works so long as `c` is in the field; in this case it is either the
         // constant `R2` or `R3`.
-        let d1 = Fp(blst_fp {
-            l: [limbs[6], limbs[7], limbs[8], limbs[9], limbs[10], limbs[11]],
-        });
-        let d0 = Fp(blst_fp {
-            l: [limbs[0], limbs[1], limbs[2], limbs[3], limbs[4], limbs[5]],
-        });
+        let d1 = Fp([limbs[6], limbs[7], limbs[8], limbs[9], limbs[10], limbs[11]]);
+        let d0 = Fp([limbs[0], limbs[1], limbs[2], limbs[3], limbs[4], limbs[5]]);
         // Convert to Montgomery form
         d0 * R2 + d1 * R3
     }
 
-    #[cfg(feature = "hashing")]
+    /// Returns whether or not this element is strictly lexicographically
+    /// larger than its negation.
+    pub fn lexicographically_largest(&self) -> Choice {
+        // This can be determined by checking to see if the element is
+        // larger than (p - 1) // 2. If we subtract by ((p - 1) // 2) + 1
+        // and there is no underflow, then the element must be larger than
+        // (p - 1) // 2.
+
+        // First, because self is in Montgomery form we need to reduce it
+        let tmp = Fp::montgomery_reduce(
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5], 0, 0, 0, 0, 0, 0,
+        );
+
+        let (_, borrow) = sbb(tmp.0[0], 0xdcff_7fff_ffff_d556, 0);
+        let (_, borrow) = sbb(tmp.0[1], 0x0f55_ffff_58a9_ffff, borrow);
+        let (_, borrow) = sbb(tmp.0[2], 0xb398_6950_7b58_7b12, borrow);
+        let (_, borrow) = sbb(tmp.0[3], 0xb23b_a5c2_79c2_895f, borrow);
+        let (_, borrow) = sbb(tmp.0[4], 0x258d_d3db_21a5_d66b, borrow);
+        let (_, borrow) = sbb(tmp.0[5], 0x0d00_88f5_1cbf_f34d, borrow);
+
+        // If the element was smaller, the subtraction will underflow
+        // producing a borrow value of 0xffff...ffff, otherwise it will
+        // be zero. We create a Choice representing true if there was
+        // overflow (and so this element is not lexicographically larger
+        // than its negation) and then negate it.
+
+        !Choice::from((borrow as u8) & 1)
+    }
+
+    /// Constructs an element of `Fp` without checking that it is
+    /// canonical.
+    pub const fn from_raw_unchecked(v: [u64; 6]) -> Fp {
+        Fp(v)
+    }
+
+    /// Although this is labeled "vartime", it is only
+    /// variable time with respect to the exponent. It
+    /// is also not exposed in the public API.
+    pub(crate) fn pow_vartime(&self, by: &[u64; 6]) -> Self {
+        let mut res = Self::ONE;
+        for e in by.iter().rev() {
+            for i in (0..64).rev() {
+                res = res.square();
+
+                if ((*e >> i) & 1) == 1 {
+                    res *= self;
+                }
+            }
+        }
+        res
+    }
+
+    /// Compute the modular square root of this field element
+    #[inline]
+    pub fn sqrt(&self) -> CtOption<Self> {
+        // We use Shanks' method, as p = 3 (mod 4). This means
+        // we only need to exponentiate by (p+1)/4. This only
+        // works for elements that are actually quadratic residue,
+        // so we check that we got the correct result at the end.
+
+        let sqrt = self.pow_vartime(&[
+            0xee7f_bfff_ffff_eaab,
+            0x07aa_ffff_ac54_ffff,
+            0xd9cc_34a8_3dac_3d89,
+            0xd91d_d2e1_3ce1_44af,
+            0x92c6_e9ed_90d2_eb35,
+            0x0680_447a_8e5f_f9a6,
+        ]);
+
+        CtOption::new(sqrt, sqrt.square().ct_eq(self))
+    }
+
+    #[inline]
+    /// Computes the multiplicative inverse of this field
+    /// element, returning None in the case that this element
+    /// is zero.
+    pub fn invert(&self) -> CtOption<Self> {
+        // Exponentiate by p - 2
+        let t = self.pow_vartime(&[
+            0xb9fe_ffff_ffff_aaa9,
+            0x1eab_fffe_b153_ffff,
+            0x6730_d2a0_f6b0_f624,
+            0x6477_4b84_f385_12bf,
+            0x4b1b_a7b6_434b_acd7,
+            0x1a01_11ea_397f_e69a,
+        ]);
+
+        CtOption::new(t, !self.is_zero())
+    }
+
+    #[inline]
+    const fn subtract_p(&self) -> Fp {
+        let (r0, borrow) = sbb(self.0[0], MODULUS[0], 0);
+        let (r1, borrow) = sbb(self.0[1], MODULUS[1], borrow);
+        let (r2, borrow) = sbb(self.0[2], MODULUS[2], borrow);
+        let (r3, borrow) = sbb(self.0[3], MODULUS[3], borrow);
+        let (r4, borrow) = sbb(self.0[4], MODULUS[4], borrow);
+        let (r5, borrow) = sbb(self.0[5], MODULUS[5], borrow);
+
+        // If underflow occurred on the final limb, borrow = 0xfff...fff, otherwise
+        // borrow = 0x000...000. Thus, we use it as a mask!
+        let r0 = (self.0[0] & borrow) | (r0 & !borrow);
+        let r1 = (self.0[1] & borrow) | (r1 & !borrow);
+        let r2 = (self.0[2] & borrow) | (r2 & !borrow);
+        let r3 = (self.0[3] & borrow) | (r3 & !borrow);
+        let r4 = (self.0[4] & borrow) | (r4 & !borrow);
+        let r5 = (self.0[5] & borrow) | (r5 & !borrow);
+
+        Fp([r0, r1, r2, r3, r4, r5])
+    }
+
+    /// Add `self` to `rhs` and return the result
+    #[inline]
+    pub const fn add(&self, rhs: &Fp) -> Fp {
+        let (d0, carry) = adc(self.0[0], rhs.0[0], 0);
+        let (d1, carry) = adc(self.0[1], rhs.0[1], carry);
+        let (d2, carry) = adc(self.0[2], rhs.0[2], carry);
+        let (d3, carry) = adc(self.0[3], rhs.0[3], carry);
+        let (d4, carry) = adc(self.0[4], rhs.0[4], carry);
+        let (d5, _) = adc(self.0[5], rhs.0[5], carry);
+
+        // Attempt to subtract the modulus, to ensure the value
+        // is smaller than the modulus.
+        Fp([d0, d1, d2, d3, d4, d5]).subtract_p()
+    }
+
+    /// Negate this element
+    #[inline]
+    pub const fn neg(&self) -> Fp {
+        let (d0, borrow) = sbb(MODULUS[0], self.0[0], 0);
+        let (d1, borrow) = sbb(MODULUS[1], self.0[1], borrow);
+        let (d2, borrow) = sbb(MODULUS[2], self.0[2], borrow);
+        let (d3, borrow) = sbb(MODULUS[3], self.0[3], borrow);
+        let (d4, borrow) = sbb(MODULUS[4], self.0[4], borrow);
+        let (d5, _) = sbb(MODULUS[5], self.0[5], borrow);
+
+        // Let's use a mask if `self` was zero, which would mean
+        // the result of the subtraction is p.
+        let mask = (((self.0[0] | self.0[1] | self.0[2] | self.0[3] | self.0[4] | self.0[5]) == 0)
+            as u64)
+            .wrapping_sub(1);
+
+        Fp([
+            d0 & mask,
+            d1 & mask,
+            d2 & mask,
+            d3 & mask,
+            d4 & mask,
+            d5 & mask,
+        ])
+    }
+
+    /// Subtract `rhs` from `self` and return the result
+    #[inline]
+    pub const fn sub(&self, rhs: &Fp) -> Fp {
+        Fp::add(&Fp::neg(rhs), self)
+    }
+
+    /// Returns `c = a.zip(b).fold(0, |acc, (a_i, b_i)| acc + a_i * b_i)`.
+    ///
+    /// Implements Algorithm 2 from Patrick Longa's
+    /// [ePrint 2022-367](https://eprint.iacr.org/2022/367) §3.
+    #[inline]
+    pub(crate) fn sum_of_products<const T: usize>(a: [Fp; T], b: [Fp; T]) -> Fp {
+        // For a single `a x b` multiplication, operand scanning (schoolbook) takes each
+        // limb of `a` in turn, and multiplies it by all of the limbs of `b` to compute
+        // the result as a double-width intermediate representation, which is then fully
+        // reduced at the end. Here however we have pairs of multiplications (a_i, b_i),
+        // the results of which are summed.
+        //
+        // The intuition for this algorithm is two-fold:
+        // - We can interleave the operand scanning for each pair, by processing the jth
+        //   limb of each `a_i` together. As these have the same offset within the overall
+        //   operand scanning flow, their results can be summed directly.
+        // - We can interleave the multiplication and reduction steps, resulting in a
+        //   single bitshift by the limb size after each iteration. This means we only
+        //   need to store a single extra limb overall, instead of keeping around all the
+        //   intermediate results and eventually having twice as many limbs.
+
+        // Algorithm 2, line 2
+        let (u0, u1, u2, u3, u4, u5) =
+            (0..6).fold((0, 0, 0, 0, 0, 0), |(u0, u1, u2, u3, u4, u5), j| {
+                // Algorithm 2, line 3
+                // For each pair in the overall sum of products:
+                let (t0, t1, t2, t3, t4, t5, t6) = (0..T).fold(
+                    (u0, u1, u2, u3, u4, u5, 0),
+                    |(t0, t1, t2, t3, t4, t5, t6), i| {
+                        // Compute digit_j x row and accumulate into `u`.
+                        let (t0, carry) = mac(t0, a[i].0[j], b[i].0[0], 0);
+                        let (t1, carry) = mac(t1, a[i].0[j], b[i].0[1], carry);
+                        let (t2, carry) = mac(t2, a[i].0[j], b[i].0[2], carry);
+                        let (t3, carry) = mac(t3, a[i].0[j], b[i].0[3], carry);
+                        let (t4, carry) = mac(t4, a[i].0[j], b[i].0[4], carry);
+                        let (t5, carry) = mac(t5, a[i].0[j], b[i].0[5], carry);
+                        let (t6, _) = adc(t6, 0, carry);
+
+                        (t0, t1, t2, t3, t4, t5, t6)
+                    },
+                );
+
+                // Algorithm 2, lines 4-5
+                // This is a single step of the usual Montgomery reduction process.
+                let k = t0.wrapping_mul(INV);
+                let (_, carry) = mac(t0, k, MODULUS[0], 0);
+                let (r1, carry) = mac(t1, k, MODULUS[1], carry);
+                let (r2, carry) = mac(t2, k, MODULUS[2], carry);
+                let (r3, carry) = mac(t3, k, MODULUS[3], carry);
+                let (r4, carry) = mac(t4, k, MODULUS[4], carry);
+                let (r5, carry) = mac(t5, k, MODULUS[5], carry);
+                let (r6, _) = adc(t6, 0, carry);
+
+                (r1, r2, r3, r4, r5, r6)
+            });
+
+        // Because we represent F_p elements in non-redundant form, we need a final
+        // conditional subtraction to ensure the output is in range.
+        Fp([u0, u1, u2, u3, u4, u5]).subtract_p()
+    }
+
+    #[inline(always)]
+    pub(crate) const fn montgomery_reduce(
+        t0: u64,
+        t1: u64,
+        t2: u64,
+        t3: u64,
+        t4: u64,
+        t5: u64,
+        t6: u64,
+        t7: u64,
+        t8: u64,
+        t9: u64,
+        t10: u64,
+        t11: u64,
+    ) -> Self {
+        // The Montgomery reduction here is based on Algorithm 14.32 in
+        // Handbook of Applied Cryptography
+        // <http://cacr.uwaterloo.ca/hac/about/chap14.pdf>.
+
+        let k = t0.wrapping_mul(INV);
+        let (_, carry) = mac(t0, k, MODULUS[0], 0);
+        let (r1, carry) = mac(t1, k, MODULUS[1], carry);
+        let (r2, carry) = mac(t2, k, MODULUS[2], carry);
+        let (r3, carry) = mac(t3, k, MODULUS[3], carry);
+        let (r4, carry) = mac(t4, k, MODULUS[4], carry);
+        let (r5, carry) = mac(t5, k, MODULUS[5], carry);
+        let (r6, r7) = adc(t6, 0, carry);
+
+        let k = r1.wrapping_mul(INV);
+        let (_, carry) = mac(r1, k, MODULUS[0], 0);
+        let (r2, carry) = mac(r2, k, MODULUS[1], carry);
+        let (r3, carry) = mac(r3, k, MODULUS[2], carry);
+        let (r4, carry) = mac(r4, k, MODULUS[3], carry);
+        let (r5, carry) = mac(r5, k, MODULUS[4], carry);
+        let (r6, carry) = mac(r6, k, MODULUS[5], carry);
+        let (r7, r8) = adc(t7, r7, carry);
+
+        let k = r2.wrapping_mul(INV);
+        let (_, carry) = mac(r2, k, MODULUS[0], 0);
+        let (r3, carry) = mac(r3, k, MODULUS[1], carry);
+        let (r4, carry) = mac(r4, k, MODULUS[2], carry);
+        let (r5, carry) = mac(r5, k, MODULUS[3], carry);
+        let (r6, carry) = mac(r6, k, MODULUS[4], carry);
+        let (r7, carry) = mac(r7, k, MODULUS[5], carry);
+        let (r8, r9) = adc(t8, r8, carry);
+
+        let k = r3.wrapping_mul(INV);
+        let (_, carry) = mac(r3, k, MODULUS[0], 0);
+        let (r4, carry) = mac(r4, k, MODULUS[1], carry);
+        let (r5, carry) = mac(r5, k, MODULUS[2], carry);
+        let (r6, carry) = mac(r6, k, MODULUS[3], carry);
+        let (r7, carry) = mac(r7, k, MODULUS[4], carry);
+        let (r8, carry) = mac(r8, k, MODULUS[5], carry);
+        let (r9, r10) = adc(t9, r9, carry);
+
+        let k = r4.wrapping_mul(INV);
+        let (_, carry) = mac(r4, k, MODULUS[0], 0);
+        let (r5, carry) = mac(r5, k, MODULUS[1], carry);
+        let (r6, carry) = mac(r6, k, MODULUS[2], carry);
+        let (r7, carry) = mac(r7, k, MODULUS[3], carry);
+        let (r8, carry) = mac(r8, k, MODULUS[4], carry);
+        let (r9, carry) = mac(r9, k, MODULUS[5], carry);
+        let (r10, r11) = adc(t10, r10, carry);
+
+        let k = r5.wrapping_mul(INV);
+        let (_, carry) = mac(r5, k, MODULUS[0], 0);
+        let (r6, carry) = mac(r6, k, MODULUS[1], carry);
+        let (r7, carry) = mac(r7, k, MODULUS[2], carry);
+        let (r8, carry) = mac(r8, k, MODULUS[3], carry);
+        let (r9, carry) = mac(r9, k, MODULUS[4], carry);
+        let (r10, carry) = mac(r10, k, MODULUS[5], carry);
+        let (r11, _) = adc(t11, r11, carry);
+
+        // Attempt to subtract the modulus, to ensure the value
+        // is smaller than the modulus.
+        Fp([r6, r7, r8, r9, r10, r11]).subtract_p()
+    }
+
+    /// Return 2*self
+    #[inline(always)]
+    pub const fn double(&self) -> Fp {
+        Fp::add(self, self)
+    }
+
+    /// Compute `self` * `rhs`
+    #[inline]
+    pub const fn mul(&self, rhs: &Fp) -> Fp {
+        let (t0, carry) = mac(0, self.0[0], rhs.0[0], 0);
+        let (t1, carry) = mac(0, self.0[0], rhs.0[1], carry);
+        let (t2, carry) = mac(0, self.0[0], rhs.0[2], carry);
+        let (t3, carry) = mac(0, self.0[0], rhs.0[3], carry);
+        let (t4, carry) = mac(0, self.0[0], rhs.0[4], carry);
+        let (t5, t6) = mac(0, self.0[0], rhs.0[5], carry);
+
+        let (t1, carry) = mac(t1, self.0[1], rhs.0[0], 0);
+        let (t2, carry) = mac(t2, self.0[1], rhs.0[1], carry);
+        let (t3, carry) = mac(t3, self.0[1], rhs.0[2], carry);
+        let (t4, carry) = mac(t4, self.0[1], rhs.0[3], carry);
+        let (t5, carry) = mac(t5, self.0[1], rhs.0[4], carry);
+        let (t6, t7) = mac(t6, self.0[1], rhs.0[5], carry);
+
+        let (t2, carry) = mac(t2, self.0[2], rhs.0[0], 0);
+        let (t3, carry) = mac(t3, self.0[2], rhs.0[1], carry);
+        let (t4, carry) = mac(t4, self.0[2], rhs.0[2], carry);
+        let (t5, carry) = mac(t5, self.0[2], rhs.0[3], carry);
+        let (t6, carry) = mac(t6, self.0[2], rhs.0[4], carry);
+        let (t7, t8) = mac(t7, self.0[2], rhs.0[5], carry);
+
+        let (t3, carry) = mac(t3, self.0[3], rhs.0[0], 0);
+        let (t4, carry) = mac(t4, self.0[3], rhs.0[1], carry);
+        let (t5, carry) = mac(t5, self.0[3], rhs.0[2], carry);
+        let (t6, carry) = mac(t6, self.0[3], rhs.0[3], carry);
+        let (t7, carry) = mac(t7, self.0[3], rhs.0[4], carry);
+        let (t8, t9) = mac(t8, self.0[3], rhs.0[5], carry);
+
+        let (t4, carry) = mac(t4, self.0[4], rhs.0[0], 0);
+        let (t5, carry) = mac(t5, self.0[4], rhs.0[1], carry);
+        let (t6, carry) = mac(t6, self.0[4], rhs.0[2], carry);
+        let (t7, carry) = mac(t7, self.0[4], rhs.0[3], carry);
+        let (t8, carry) = mac(t8, self.0[4], rhs.0[4], carry);
+        let (t9, t10) = mac(t9, self.0[4], rhs.0[5], carry);
+
+        let (t5, carry) = mac(t5, self.0[5], rhs.0[0], 0);
+        let (t6, carry) = mac(t6, self.0[5], rhs.0[1], carry);
+        let (t7, carry) = mac(t7, self.0[5], rhs.0[2], carry);
+        let (t8, carry) = mac(t8, self.0[5], rhs.0[3], carry);
+        let (t9, carry) = mac(t9, self.0[5], rhs.0[4], carry);
+        let (t10, t11) = mac(t10, self.0[5], rhs.0[5], carry);
+
+        Self::montgomery_reduce(t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11)
+    }
+
+    /// Squares this element.
+    #[inline]
+    pub const fn square(&self) -> Self {
+        let (t1, carry) = mac(0, self.0[0], self.0[1], 0);
+        let (t2, carry) = mac(0, self.0[0], self.0[2], carry);
+        let (t3, carry) = mac(0, self.0[0], self.0[3], carry);
+        let (t4, carry) = mac(0, self.0[0], self.0[4], carry);
+        let (t5, t6) = mac(0, self.0[0], self.0[5], carry);
+
+        let (t3, carry) = mac(t3, self.0[1], self.0[2], 0);
+        let (t4, carry) = mac(t4, self.0[1], self.0[3], carry);
+        let (t5, carry) = mac(t5, self.0[1], self.0[4], carry);
+        let (t6, t7) = mac(t6, self.0[1], self.0[5], carry);
+
+        let (t5, carry) = mac(t5, self.0[2], self.0[3], 0);
+        let (t6, carry) = mac(t6, self.0[2], self.0[4], carry);
+        let (t7, t8) = mac(t7, self.0[2], self.0[5], carry);
+
+        let (t7, carry) = mac(t7, self.0[3], self.0[4], 0);
+        let (t8, t9) = mac(t8, self.0[3], self.0[5], carry);
+
+        let (t9, t10) = mac(t9, self.0[4], self.0[5], 0);
+
+        let t11 = t10 >> 63;
+        let t10 = (t10 << 1) | (t9 >> 63);
+        let t9 = (t9 << 1) | (t8 >> 63);
+        let t8 = (t8 << 1) | (t7 >> 63);
+        let t7 = (t7 << 1) | (t6 >> 63);
+        let t6 = (t6 << 1) | (t5 >> 63);
+        let t5 = (t5 << 1) | (t4 >> 63);
+        let t4 = (t4 << 1) | (t3 >> 63);
+        let t3 = (t3 << 1) | (t2 >> 63);
+        let t2 = (t2 << 1) | (t1 >> 63);
+        let t1 = t1 << 1;
+
+        let (t0, carry) = mac(0, self.0[0], self.0[0], 0);
+        let (t1, carry) = adc(t1, 0, carry);
+        let (t2, carry) = mac(t2, self.0[1], self.0[1], carry);
+        let (t3, carry) = adc(t3, 0, carry);
+        let (t4, carry) = mac(t4, self.0[2], self.0[2], carry);
+        let (t5, carry) = adc(t5, 0, carry);
+        let (t6, carry) = mac(t6, self.0[3], self.0[3], carry);
+        let (t7, carry) = adc(t7, 0, carry);
+        let (t8, carry) = mac(t8, self.0[4], self.0[4], carry);
+        let (t9, carry) = adc(t9, 0, carry);
+        let (t10, carry) = mac(t10, self.0[5], self.0[5], carry);
+        let (t11, _) = adc(t11, 0, carry);
+
+        Self::montgomery_reduce(t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11)
+    }
+
+    /// Returns true whenever value is a square in the field
+    /// using Euler's criterion
+    #[inline]
+    pub fn is_square(&self) -> Choice {
+        const PM1DIV2: [u64; 6] = [
+            0xdcff_7fff_ffff_d555u64,
+            0x0f55_ffff_58a9_ffffu64,
+            0xb398_6950_7b58_7b12u64,
+            0xb23b_a5c2_79c2_895fu64,
+            0x258d_d3db_21a5_d66bu64,
+            0x0d00_88f5_1cbf_f34du64,
+        ];
+
+        let res = self.pow_vartime(&PM1DIV2);
+        res.is_zero().bitor(res.ct_eq(&Self::ONE))
+    }
+
     /// Take 64 bytes and compute the result reduced by the field modulus
     pub(crate) fn from_random_bytes(okm: [u8; 64]) -> Self {
         Self::from_u768([
@@ -718,8 +931,7 @@ impl Fp {
         ])
     }
 
-    #[cfg(feature = "hashing")]
-    pub(crate) fn hash<X>(msg: &[u8], dst: &[u8]) -> [Self; 2]
+    pub(crate) fn hash<X>(msg: &[u8], dst: &[u8]) -> [Fp; 2]
     where
         X: for<'a> ExpandMsg<'a>,
     {
@@ -733,7 +945,6 @@ impl Fp {
         ]
     }
 
-    #[cfg(feature = "hashing")]
     pub(crate) fn encode<X>(msg: &[u8], dst: &[u8]) -> Fp
     where
         X: for<'a> ExpandMsg<'a>,
@@ -746,751 +957,329 @@ impl Fp {
     }
 }
 
-#[cfg(feature = "gpu")]
-impl ec_gpu::GpuName for Fp {
-    fn name() -> String {
-        ec_gpu::name!()
-    }
+#[test]
+fn test_conditional_selection() {
+    let a = Fp([1, 2, 3, 4, 5, 6]);
+    let b = Fp([7, 8, 9, 10, 11, 12]);
+
+    assert_eq!(
+        ConditionallySelectable::conditional_select(&a, &b, Choice::from(0u8)),
+        a
+    );
+    assert_eq!(
+        ConditionallySelectable::conditional_select(&a, &b, Choice::from(1u8)),
+        b
+    );
 }
 
-#[cfg(feature = "gpu")]
-impl ec_gpu::GpuField for Fp {
-    fn one() -> Vec<u32> {
-        crate::u64_to_u32(&R.0.l[..])
+#[test]
+fn test_equality() {
+    fn is_equal(a: &Fp, b: &Fp) -> bool {
+        let eq = a == b;
+        let ct_eq = a.ct_eq(b);
+
+        assert_eq!(eq, bool::from(ct_eq));
+
+        eq
     }
 
-    fn r2() -> Vec<u32> {
-        crate::u64_to_u32(&R2.0.l[..])
-    }
+    assert!(is_equal(&Fp([1, 2, 3, 4, 5, 6]), &Fp([1, 2, 3, 4, 5, 6])));
 
-    fn modulus() -> Vec<u32> {
-        crate::u64_to_u32(&MODULUS[..])
-    }
+    assert!(!is_equal(&Fp([7, 2, 3, 4, 5, 6]), &Fp([1, 2, 3, 4, 5, 6])));
+    assert!(!is_equal(&Fp([1, 7, 3, 4, 5, 6]), &Fp([1, 2, 3, 4, 5, 6])));
+    assert!(!is_equal(&Fp([1, 2, 7, 4, 5, 6]), &Fp([1, 2, 3, 4, 5, 6])));
+    assert!(!is_equal(&Fp([1, 2, 3, 7, 5, 6]), &Fp([1, 2, 3, 4, 5, 6])));
+    assert!(!is_equal(&Fp([1, 2, 3, 4, 7, 6]), &Fp([1, 2, 3, 4, 5, 6])));
+    assert!(!is_equal(&Fp([1, 2, 3, 4, 5, 7]), &Fp([1, 2, 3, 4, 5, 6])));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[test]
+fn test_squaring() {
+    let a = Fp([
+        0xd215_d276_8e83_191b,
+        0x5085_d80f_8fb2_8261,
+        0xce9a_032d_df39_3a56,
+        0x3e9c_4fff_2ca0_c4bb,
+        0x6436_b6f7_f4d9_5dfb,
+        0x1060_6628_ad4a_4d90,
+    ]);
+    let b = Fp([
+        0x33d9_c42a_3cb3_e235,
+        0xdad1_1a09_4c4c_d455,
+        0xa2f1_44bd_729a_aeba,
+        0xd415_0932_be9f_feac,
+        0xe27b_c7c4_7d44_ee50,
+        0x14b6_a78d_3ec7_a560,
+    ]);
 
-    use ff::Field;
-    use rand_core::SeedableRng;
-    use rand_xorshift::XorShiftRng;
+    assert_eq!(a.square(), b);
+}
 
-    #[test]
-    fn test_fp_neg_one() {
-        assert_eq!(
-            -Fp::ONE,
-            Fp(blst::blst_fp {
-                l: [
-                    0x43f5fffffffcaaae,
-                    0x32b7fff2ed47fffd,
-                    0x7e83a49a2e99d69,
-                    0xeca8f3318332bb7a,
-                    0xef148d1ea0f4c069,
-                    0x40ab3263eff0206,
-                ]
-            }),
-        );
-    }
+#[test]
+fn test_multiplication() {
+    let a = Fp([
+        0x0397_a383_2017_0cd4,
+        0x734c_1b2c_9e76_1d30,
+        0x5ed2_55ad_9a48_beb5,
+        0x095a_3c6b_22a7_fcfc,
+        0x2294_ce75_d4e2_6a27,
+        0x1333_8bd8_7001_1ebb,
+    ]);
+    let b = Fp([
+        0xb9c3_c7c5_b119_6af7,
+        0x2580_e208_6ce3_35c1,
+        0xf49a_ed3d_8a57_ef42,
+        0x41f2_81e4_9846_e878,
+        0xe076_2346_c384_52ce,
+        0x0652_e893_26e5_7dc0,
+    ]);
+    let c = Fp([
+        0xf96e_f3d7_11ab_5355,
+        0xe8d4_59ea_00f1_48dd,
+        0x53f7_354a_5f00_fa78,
+        0x9e34_a4f3_125c_5f83,
+        0x3fbe_0c47_ca74_c19e,
+        0x01b0_6a8b_bd4a_dfe4,
+    ]);
 
-    #[test]
-    fn test_fp_from_u64() {
-        let a = Fp::from(100);
-        let mut expected_bytes = [0u8; 48];
-        expected_bytes[0] = 100;
-        assert_eq!(a.to_bytes_le(), expected_bytes);
-    }
+    assert_eq!(a * b, c);
+}
 
-    #[test]
-    fn test_fp_is_zero() {
-        assert!(bool::from(Fp::from(0).is_zero()));
-        assert!(!bool::from(Fp::from(1).is_zero()));
-        assert!(!bool::from(
-            Fp::from_raw(&[0, 0, 0, 0, 1, 0]).unwrap().is_zero()
-        ));
-    }
+#[test]
+fn test_addition() {
+    let a = Fp([
+        0x5360_bb59_7867_8032,
+        0x7dd2_75ae_799e_128e,
+        0x5c5b_5071_ce4f_4dcf,
+        0xcdb2_1f93_078d_bb3e,
+        0xc323_65c5_e73f_474a,
+        0x115a_2a54_89ba_be5b,
+    ]);
+    let b = Fp([
+        0x9fd2_8773_3d23_dda0,
+        0xb16b_f2af_738b_3554,
+        0x3e57_a75b_d3cc_6d1d,
+        0x900b_c0bd_627f_d6d6,
+        0xd319_a080_efb2_45fe,
+        0x15fd_caa4_e4bb_2091,
+    ]);
+    let c = Fp([
+        0x3934_42cc_b58b_b327,
+        0x1092_685f_3bd5_47e3,
+        0x3382_252c_ab6a_c4c9,
+        0xf946_94cb_7688_7f55,
+        0x4b21_5e90_93a5_e071,
+        0x0d56_e30f_34f5_f853,
+    ]);
 
-    #[test]
-    fn test_fp_add_assign() {
-        {
-            // Random number
-            let mut tmp = Fp(blst::blst_fp {
-                l: [
-                    0x624434821df92b69,
-                    0x503260c04fd2e2ea,
-                    0xd9df726e0d16e8ce,
-                    0xfbcb39adfd5dfaeb,
-                    0x86b8a22b0c88b112,
-                    0x165a2ed809e4201b,
-                ],
-            });
-            assert!(!bool::from(tmp.is_zero()));
-            // Test that adding zero has no effect.
-            tmp.add_assign(&Fp::from(0));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0x624434821df92b69,
-                        0x503260c04fd2e2ea,
-                        0xd9df726e0d16e8ce,
-                        0xfbcb39adfd5dfaeb,
-                        0x86b8a22b0c88b112,
-                        0x165a2ed809e4201b
-                    ]
-                })
-            );
-            // Add one and test for the result.
-            tmp.add_assign(&Fp(blst::blst_fp {
-                l: [1, 0, 0, 0, 0, 0],
-            }));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0x624434821df92b6a,
-                        0x503260c04fd2e2ea,
-                        0xd9df726e0d16e8ce,
-                        0xfbcb39adfd5dfaeb,
-                        0x86b8a22b0c88b112,
-                        0x165a2ed809e4201b
-                    ]
-                })
-            );
-            // Add another random number that exercises the reduction.
-            tmp.add_assign(&Fp(blst::blst_fp {
-                l: [
-                    0x374d8f8ea7a648d8,
-                    0xe318bb0ebb8bfa9b,
-                    0x613d996f0a95b400,
-                    0x9fac233cb7e4fef1,
-                    0x67e47552d253c52,
-                    0x5c31b227edf25da,
-                ],
-            }));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0xdf92c410c59fc997,
-                        0x149f1bd05a0add85,
-                        0xd3ec393c20fba6ab,
-                        0x37001165c1bde71d,
-                        0x421b41c9f662408e,
-                        0x21c38104f435f5b
-                    ]
-                })
-            );
-            // Add one to (q - 1) and test for the result.
-            tmp = Fp(blst::blst_fp {
-                l: [
-                    0xb9feffffffffaaaa,
-                    0x1eabfffeb153ffff,
-                    0x6730d2a0f6b0f624,
-                    0x64774b84f38512bf,
-                    0x4b1ba7b6434bacd7,
-                    0x1a0111ea397fe69a,
-                ],
-            });
-            tmp.add_assign(&Fp(blst::blst_fp {
-                l: [1, 0, 0, 0, 0, 0],
-            }));
-            assert!(bool::from(tmp.is_zero()));
-            // Add a random number to another one such that the result is q - 1
-            tmp = Fp(blst::blst_fp {
-                l: [
-                    0x531221a410efc95b,
-                    0x72819306027e9717,
-                    0x5ecefb937068b746,
-                    0x97de59cd6feaefd7,
-                    0xdc35c51158644588,
-                    0xb2d176c04f2100,
-                ],
-            });
-            tmp.add_assign(&Fp(blst::blst_fp {
-                l: [
-                    0x66ecde5bef0fe14f,
-                    0xac2a6cf8aed568e8,
-                    0x861d70d86483edd,
-                    0xcc98f1b7839a22e8,
-                    0x6ee5e2a4eae7674e,
-                    0x194e40737930c599,
-                ],
-            }));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0xb9feffffffffaaaa,
-                        0x1eabfffeb153ffff,
-                        0x6730d2a0f6b0f624,
-                        0x64774b84f38512bf,
-                        0x4b1ba7b6434bacd7,
-                        0x1a0111ea397fe69a
-                    ]
-                })
-            );
-            // Add one to the result and test for it.
-            tmp.add_assign(&Fp(blst::blst_fp {
-                l: [1, 0, 0, 0, 0, 0],
-            }));
-            assert!(bool::from(tmp.is_zero()));
-        }
+    assert_eq!(a + b, c);
+}
 
-        // Test associativity
+#[test]
+fn test_subtraction() {
+    let a = Fp([
+        0x5360_bb59_7867_8032,
+        0x7dd2_75ae_799e_128e,
+        0x5c5b_5071_ce4f_4dcf,
+        0xcdb2_1f93_078d_bb3e,
+        0xc323_65c5_e73f_474a,
+        0x115a_2a54_89ba_be5b,
+    ]);
+    let b = Fp([
+        0x9fd2_8773_3d23_dda0,
+        0xb16b_f2af_738b_3554,
+        0x3e57_a75b_d3cc_6d1d,
+        0x900b_c0bd_627f_d6d6,
+        0xd319_a080_efb2_45fe,
+        0x15fd_caa4_e4bb_2091,
+    ]);
+    let c = Fp([
+        0x6d8d_33e6_3b43_4d3d,
+        0xeb12_82fd_b766_dd39,
+        0x8534_7bb6_f133_d6d5,
+        0xa21d_aa5a_9892_f727,
+        0x3b25_6cfb_3ad8_ae23,
+        0x155d_7199_de7f_8464,
+    ]);
 
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
+    assert_eq!(a - b, c);
+}
 
-        for _ in 0..1000 {
-            // Generate a, b, c and ensure (a + b) + c == a + (b + c).
-            let a = Fp::random(&mut rng);
-            let b = Fp::random(&mut rng);
-            let c = Fp::random(&mut rng);
+#[test]
+fn test_negation() {
+    let a = Fp([
+        0x5360_bb59_7867_8032,
+        0x7dd2_75ae_799e_128e,
+        0x5c5b_5071_ce4f_4dcf,
+        0xcdb2_1f93_078d_bb3e,
+        0xc323_65c5_e73f_474a,
+        0x115a_2a54_89ba_be5b,
+    ]);
+    let b = Fp([
+        0x669e_44a6_8798_2a79,
+        0xa0d9_8a50_37b5_ed71,
+        0x0ad5_822f_2861_a854,
+        0x96c5_2bf1_ebf7_5781,
+        0x87f8_41f0_5c0c_658c,
+        0x08a6_e795_afc5_283e,
+    ]);
 
-            let mut tmp1 = a;
-            tmp1.add_assign(&b);
-            tmp1.add_assign(&c);
+    assert_eq!(-a, b);
+}
 
-            let mut tmp2 = b;
-            tmp2.add_assign(&c);
-            tmp2.add_assign(&a);
-
-            // assert!(tmp1.is_valid());
-            // assert!(tmp2.is_valid());
-            assert_eq!(tmp1, tmp2);
-        }
-    }
-
-    #[test]
-    fn test_fp_sub_assign() {
-        {
-            // Test arbitrary subtraction that tests reduction.
-            let mut tmp = Fp(blst::blst_fp {
-                l: [
-                    0x531221a410efc95b,
-                    0x72819306027e9717,
-                    0x5ecefb937068b746,
-                    0x97de59cd6feaefd7,
-                    0xdc35c51158644588,
-                    0xb2d176c04f2100,
-                ],
-            });
-            tmp.sub_assign(&Fp(blst::blst_fp {
-                l: [
-                    0x98910d20877e4ada,
-                    0x940c983013f4b8ba,
-                    0xf677dc9b8345ba33,
-                    0xbef2ce6b7f577eba,
-                    0xe1ae288ac3222c44,
-                    0x5968bb602790806,
-                ],
-            }));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0x748014838971292c,
-                        0xfd20fad49fddde5c,
-                        0xcf87f198e3d3f336,
-                        0x3d62d6e6e41883db,
-                        0x45a3443cd88dc61b,
-                        0x151d57aaf755ff94
-                    ]
-                })
-            );
-
-            // Test the opposite subtraction which doesn't test reduction.
-            tmp = Fp(blst::blst_fp {
-                l: [
-                    0x98910d20877e4ada,
-                    0x940c983013f4b8ba,
-                    0xf677dc9b8345ba33,
-                    0xbef2ce6b7f577eba,
-                    0xe1ae288ac3222c44,
-                    0x5968bb602790806,
-                ],
-            });
-            tmp.sub_assign(&Fp(blst::blst_fp {
-                l: [
-                    0x531221a410efc95b,
-                    0x72819306027e9717,
-                    0x5ecefb937068b746,
-                    0x97de59cd6feaefd7,
-                    0xdc35c51158644588,
-                    0xb2d176c04f2100,
-                ],
-            }));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0x457eeb7c768e817f,
-                        0x218b052a117621a3,
-                        0x97a8e10812dd02ed,
-                        0x2714749e0f6c8ee3,
-                        0x57863796abde6bc,
-                        0x4e3ba3f4229e706
-                    ]
-                })
-            );
-
-            // Test for sensible results with zero
-            tmp = Fp::from(0);
-            tmp.sub_assign(&Fp::from(0));
-            assert!(bool::from(tmp.is_zero()));
-
-            tmp = Fp(blst::blst_fp {
-                l: [
-                    0x98910d20877e4ada,
-                    0x940c983013f4b8ba,
-                    0xf677dc9b8345ba33,
-                    0xbef2ce6b7f577eba,
-                    0xe1ae288ac3222c44,
-                    0x5968bb602790806,
-                ],
-            });
-            tmp.sub_assign(&Fp::from(0));
-            assert_eq!(
-                tmp,
-                Fp(blst::blst_fp {
-                    l: [
-                        0x98910d20877e4ada,
-                        0x940c983013f4b8ba,
-                        0xf677dc9b8345ba33,
-                        0xbef2ce6b7f577eba,
-                        0xe1ae288ac3222c44,
-                        0x5968bb602790806
-                    ]
-                })
-            );
-        }
-
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        for _ in 0..1000 {
-            // Ensure that (a - b) + (b - a) = 0.
-            let a = Fp::random(&mut rng);
-            let b = Fp::random(&mut rng);
-
-            let mut tmp1 = a;
-            tmp1.sub_assign(&b);
-
-            let mut tmp2 = b;
-            tmp2.sub_assign(&a);
-
-            tmp1.add_assign(&tmp2);
-            assert!(bool::from(tmp1.is_zero()));
-        }
-    }
-
-    #[test]
-    fn test_fp_mul_assign() {
-        assert_eq!(
-            Fp(blst::blst_fp {
-                l: [
-                    0xcc6200000020aa8a,
-                    0x422800801dd8001a,
-                    0x7f4f5e619041c62c,
-                    0x8a55171ac70ed2ba,
-                    0x3f69cc3a3d07d58b,
-                    0xb972455fd09b8ef,
-                ]
-            }) * Fp(blst::blst_fp {
-                l: [
-                    0x329300000030ffcf,
-                    0x633c00c02cc40028,
-                    0xbef70d925862a942,
-                    0x4f7fa2a82a963c17,
-                    0xdf1eb2575b8bc051,
-                    0x1162b680fb8e9566,
-                ]
-            }),
-            Fp(blst::blst_fp {
-                l: [
-                    0x9dc4000001ebfe14,
-                    0x2850078997b00193,
-                    0xa8197f1abb4d7bf,
-                    0xc0309573f4bfe871,
-                    0xf48d0923ffaf7620,
-                    0x11d4b58c7a926e66
-                ]
-            })
-        );
-
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        for _ in 0..1000000 {
-            // Ensure that (a * b) * c = a * (b * c)
-            let a = Fp::random(&mut rng);
-            let b = Fp::random(&mut rng);
-            let c = Fp::random(&mut rng);
-
-            let mut tmp1 = a;
-            tmp1.mul_assign(&b);
-            tmp1.mul_assign(&c);
-
-            let mut tmp2 = b;
-            tmp2.mul_assign(&c);
-            tmp2.mul_assign(&a);
-
-            assert_eq!(tmp1, tmp2);
-        }
-
-        for _ in 0..1000000 {
-            // Ensure that r * (a + b + c) = r*a + r*b + r*c
-
-            let r = Fp::random(&mut rng);
-            let mut a = Fp::random(&mut rng);
-            let mut b = Fp::random(&mut rng);
-            let mut c = Fp::random(&mut rng);
-
-            let mut tmp1 = a;
-            tmp1.add_assign(&b);
-            tmp1.add_assign(&c);
-            tmp1.mul_assign(&r);
-
-            a.mul_assign(&r);
-            b.mul_assign(&r);
-            c.mul_assign(&r);
-
-            a.add_assign(&b);
-            a.add_assign(&c);
-
-            assert_eq!(tmp1, a);
-        }
-    }
-
-    #[test]
-    fn test_fp_squaring() {
-        let a = Fp(blst::blst_fp {
-            l: [
-                0xffffffffffffffff,
-                0xffffffffffffffff,
-                0xffffffffffffffff,
-                0xffffffffffffffff,
-                0xffffffffffffffff,
-                0x19ffffffffffffff,
-            ],
-        });
-        assert!(!bool::from(a.is_zero()));
-        assert_eq!(
-            a.square(),
-            Fp::from_raw(&[
-                0x1cfb28fe7dfbbb86,
-                0x24cbe1731577a59,
-                0xcce1d4edc120e66e,
-                0xdc05c659b4e15b27,
-                0x79361e5a802c6a23,
-                0x24bcbe5d51b9a6f
+#[test]
+fn test_debug() {
+    assert_eq!(
+        format!(
+            "{:?}",
+            Fp([
+                0x5360_bb59_7867_8032,
+                0x7dd2_75ae_799e_128e,
+                0x5c5b_5071_ce4f_4dcf,
+                0xcdb2_1f93_078d_bb3e,
+                0xc323_65c5_e73f_474a,
+                0x115a_2a54_89ba_be5b,
             ])
-            .unwrap()
-        );
+        ),
+        "0x104bf052ad3bc99bcb176c24a06a6c3aad4eaf2308fc4d282e106c84a757d061052630515305e59bdddf8111bfdeb704"
+    );
+}
 
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
+#[test]
+fn test_from_bytes() {
+    let mut a = Fp([
+        0xdc90_6d9b_e3f9_5dc8,
+        0x8755_caf7_4596_91a1,
+        0xcff1_a7f4_e958_3ab3,
+        0x9b43_821f_849e_2284,
+        0xf575_54f3_a297_4f3f,
+        0x085d_bea8_4ed4_7f79,
+    ]);
 
-        for _ in 0..1000000 {
-            // Ensure that (a * a) = a^2
-            let a = Fp::random(&mut rng);
+    for _ in 0..100 {
+        a = a.square();
+        let tmp = a.to_bytes();
+        let b = Fp::from_bytes(&tmp).unwrap();
 
-            let tmp = a.square();
-
-            let mut tmp2 = a;
-            tmp2.mul_assign(&a);
-
-            assert_eq!(tmp, tmp2);
-        }
+        assert_eq!(a, b);
     }
 
-    #[test]
-    fn test_fp_inverse() {
-        assert_eq!(Fp::ZERO.invert().is_none().unwrap_u8(), 1);
-
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        let one = Fp::ONE;
-
-        for _ in 0..1000 {
-            // Ensure that a * a^-1 = 1
-            let mut a = Fp::random(&mut rng);
-            let ainv = a.invert().unwrap();
-            a.mul_assign(&ainv);
-            assert_eq!(a, one);
-        }
-    }
-
-    #[test]
-    fn test_fp_double() {
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        for _ in 0..1000 {
-            // Ensure doubling a is equivalent to adding a to itself.
-            let a = Fp::random(&mut rng);
-            assert_eq!(a.double(), a + a, "{}", a);
-        }
-    }
-
-    #[test]
-    fn test_fp_negate() {
-        {
-            let a = Fp::ZERO;
-            assert!(bool::from((-a).is_zero()));
-        }
-
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        for _ in 0..1000 {
-            // Ensure (a - (-a)) = 0.
-            let mut a = Fp::random(&mut rng);
-            let b = -a;
-            a.add_assign(&b);
-
-            assert!(bool::from(a.is_zero()));
-        }
-    }
-
-    #[test]
-    fn test_fp_pow() {
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        for i in 0..1000 {
-            // Exponentiate by various small numbers and ensure it consists with repeated
-            // multiplication.
-            let a = Fp::random(&mut rng);
-            let target = a.pow_vartime([i]);
-            let mut c = Fp::ONE;
-            for _ in 0..i {
-                c.mul_assign(&a);
-            }
-            assert_eq!(c, target);
-        }
-
-        for _ in 0..1000 {
-            // Exponentiating by the modulus should have no effect in a prime field.
-            let a = Fp::random(&mut rng);
-
-            assert_eq!(a, a.pow_vartime(MODULUS));
-        }
-    }
-
-    #[test]
-    fn test_fp_sqrt() {
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        assert_eq!(Fp::ZERO.sqrt().unwrap(), Fp::ZERO);
-        assert_eq!(Fp::ONE.sqrt().unwrap(), Fp::ONE);
-
-        for _ in 0..1000 {
-            // Ensure sqrt(a^2) = a or -a
-            let a = Fp::random(&mut rng);
-            let a_new = a.square().sqrt().unwrap();
-            assert!(a_new == a || a_new == -a);
-        }
-
-        for _ in 0..1000 {
-            // Ensure sqrt(a)^2 = a for random a
-            let a = Fp::random(&mut rng);
-            let sqrt = a.sqrt();
-            if sqrt.is_some().into() {
-                assert_eq!(sqrt.unwrap().square(), a);
-            }
-        }
-        // a = 4
-        let a = Fp::from_raw_unchecked([
-            0xaa27_0000_000c_fff3,
-            0x53cc_0032_fc34_000a,
-            0x478f_e97a_6b0a_807f,
-            0xb1d3_7ebe_e6ba_24d7,
-            0x8ec9_733b_bf78_ab2f,
-            0x09d6_4551_3d83_de7e,
-        ]);
-
-        assert_eq!(
-            // sqrt(4) = -2
-            -a.sqrt().unwrap(),
-            // 2
-            Fp::from_raw_unchecked([
-                0x3213_0000_0006_554f,
-                0xb93c_0018_d6c4_0005,
-                0x5760_5e0d_b0dd_bb51,
-                0x8b25_6521_ed1f_9bcb,
-                0x6cf2_8d79_0162_2c03,
-                0x11eb_ab9d_bb81_e28c,
-            ])
-        );
-    }
-
-    #[test]
-    fn test_fp_from_into_repr() {
-        // q + 1 should not be in the field
-        assert!(bool::from(
-            Fp::from_raw(&[
-                0xb9feffffffffaaac,
-                0x1eabfffeb153ffff,
-                0x6730d2a0f6b0f624,
-                0x64774b84f38512bf,
-                0x4b1ba7b6434bacd7,
-                0x1a0111ea397fe69a
-            ])
-            .is_none()
-        ));
-
-        // Multiply some arbitrary representations to see if the result is as expected.
-        let mut a = Fp::from_raw(&[
-            0x4a49dad4ff6cde2d,
-            0xac62a82a8f51cd50,
-            0x2b1f41ab9f36d640,
-            0x908a387f480735f1,
-            0xae30740c08a875d7,
-            0x6c80918a365ef78,
+    assert_eq!(
+        -Fp::ONE,
+        Fp::from_bytes(&[
+            26, 1, 17, 234, 57, 127, 230, 154, 75, 27, 167, 182, 67, 75, 172, 215, 100, 119, 75,
+            132, 243, 133, 18, 191, 103, 48, 210, 160, 246, 176, 246, 36, 30, 171, 255, 254, 177,
+            83, 255, 255, 185, 254, 255, 255, 255, 255, 170, 170
         ])
-        .unwrap();
-        let b = Fp::from_raw(&[
-            0xbba57917c32f0cf0,
-            0xe7f878cf87f05e5d,
-            0x9498b4292fd27459,
-            0xd59fd94ee4572cfa,
-            0x1f607186d5bb0059,
-            0xb13955f5ac7f6a3,
+        .unwrap()
+    );
+
+    assert!(bool::from(
+        Fp::from_bytes(&[
+            27, 1, 17, 234, 57, 127, 230, 154, 75, 27, 167, 182, 67, 75, 172, 215, 100, 119, 75,
+            132, 243, 133, 18, 191, 103, 48, 210, 160, 246, 176, 246, 36, 30, 171, 255, 254, 177,
+            83, 255, 255, 185, 254, 255, 255, 255, 255, 170, 170
         ])
-        .unwrap();
-        let c = Fp::from_raw(&[
-            0xf5f70713b717914c,
-            0x355ea5ac64cbbab1,
-            0xce60dd43417ec960,
-            0xf16b9d77b0ad7d10,
-            0xa44c204c1de7cdb7,
-            0x1684487772bc9a5a,
+        .is_none()
+    ));
+
+    assert!(bool::from(Fp::from_bytes(&[0xff; 48]).is_none()));
+}
+
+#[test]
+fn test_sqrt() {
+    // a = 4
+    let a = Fp::from_raw_unchecked([
+        0xaa27_0000_000c_fff3,
+        0x53cc_0032_fc34_000a,
+        0x478f_e97a_6b0a_807f,
+        0xb1d3_7ebe_e6ba_24d7,
+        0x8ec9_733b_bf78_ab2f,
+        0x09d6_4551_3d83_de7e,
+    ]);
+
+    assert_eq!(
+        // sqrt(4) = -2
+        -a.sqrt().unwrap(),
+        // 2
+        Fp::from_raw_unchecked([
+            0x3213_0000_0006_554f,
+            0xb93c_0018_d6c4_0005,
+            0x5760_5e0d_b0dd_bb51,
+            0x8b25_6521_ed1f_9bcb,
+            0x6cf2_8d79_0162_2c03,
+            0x11eb_ab9d_bb81_e28c,
         ])
-        .unwrap();
-        a.mul_assign(&b);
-        assert_eq!(a, c);
+    );
+}
 
-        // Zero should be in the field.
-        assert!(bool::from(Fp::from(0).is_zero()));
+#[test]
+fn test_inversion() {
+    let a = Fp([
+        0x43b4_3a50_78ac_2076,
+        0x1ce0_7630_46f8_962b,
+        0x724a_5276_486d_735c,
+        0x6f05_c2a6_282d_48fd,
+        0x2095_bd5b_b4ca_9331,
+        0x03b3_5b38_94b0_f7da,
+    ]);
+    let b = Fp([
+        0x69ec_d704_0952_148f,
+        0x985c_cc20_2219_0f55,
+        0xe19b_ba36_a9ad_2f41,
+        0x19bb_16c9_5219_dbd8,
+        0x14dc_acfd_fb47_8693,
+        0x115f_f58a_fff9_a8e1,
+    ]);
 
-        let mut rng = XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
+    assert_eq!(a.invert().unwrap(), b);
+    assert!(bool::from(Fp::ZERO.invert().is_none()));
+}
 
-        for _ in 0..1000 {
-            // Try to turn Fp elements into representations and back again, and compare.
-            let a = Fp::random(&mut rng);
-            let a_repr = a.to_bytes_le();
-            let b = Fp::from_bytes_le(&a_repr).unwrap();
-            let b_repr = b.to_bytes_le();
-            assert_eq!(a, b);
-            assert_eq!(a_repr, b_repr);
-        }
-    }
+#[test]
+fn test_lexicographic_largest() {
+    assert!(!bool::from(Fp::ZERO.lexicographically_largest()));
+    assert!(!bool::from(Fp::ONE.lexicographically_largest()));
+    assert!(!bool::from(
+        Fp::from_raw_unchecked([
+            0xa1fa_ffff_fffe_5557,
+            0x995b_fff9_76a3_fffe,
+            0x03f4_1d24_d174_ceb4,
+            0xf654_7998_c199_5dbd,
+            0x778a_468f_507a_6034,
+            0x0205_5993_1f7f_8103
+        ])
+        .lexicographically_largest()
+    ));
+    assert!(bool::from(
+        Fp::from_raw_unchecked([
+            0x1804_0000_0001_5554,
+            0x8550_0005_3ab0_0001,
+            0x633c_b57c_253c_276f,
+            0x6e22_d1ec_31eb_b502,
+            0xd391_6126_f2d1_4ca2,
+            0x17fb_b857_1a00_6596,
+        ])
+        .lexicographically_largest()
+    ));
+    assert!(bool::from(
+        Fp::from_raw_unchecked([
+            0x43f5_ffff_fffc_aaae,
+            0x32b7_fff2_ed47_fffd,
+            0x07e8_3a49_a2e9_9d69,
+            0xeca8_f331_8332_bb7a,
+            0xef14_8d1e_a0f4_c069,
+            0x040a_b326_3eff_0206,
+        ])
+        .lexicographically_largest()
+    ));
+}
 
-    #[test]
-    fn test_fp_display() {
-        assert_eq!(
-            format!("{}", Fp::from_raw(&[
-                0xa956babf9301ea24,
-                0x39a8f184f3535c7b,
-                0xb38d35b3f6779585,
-                0x676cc4eef4c46f2c,
-                0xb1d4aad87651e694,
-                0x1947f0d5f4fe325a
-            ])
-            .unwrap()),
-            "Fp(0x1947f0d5f4fe325ab1d4aad87651e694676cc4eef4c46f2cb38d35b3f677958539a8f184f3535c7ba956babf9301ea24)".to_string()
-        );
+#[test]
+fn test_zeroize() {
+    use zeroize::Zeroize;
 
-        assert_eq!(
-            format!("{}", Fp::from_raw(&[
-               0xe28e79396ac2bbf8,
-               0x413f6f7f06ea87eb,
-               0xa4b62af4a792a689,
-               0xb7f89f88f59c1dc5,
-               0x9a551859b1e43a9a,
-               0x6c9f5a1060de974
-            ])
-            .unwrap()),
-            "Fp(0x06c9f5a1060de9749a551859b1e43a9ab7f89f88f59c1dc5a4b62af4a792a689413f6f7f06ea87ebe28e79396ac2bbf8)".to_string()
-        );
-    }
-
-    #[test]
-    fn test_fp_num_bits() {
-        assert_eq!(NUM_BITS, 381);
-
-        let mut a = Fp::from(0);
-        assert_eq!(0, a.num_bits());
-        a = Fp::from(1);
-        assert_eq!(1, a.num_bits());
-        for i in 2..NUM_BITS {
-            a = a.shl(1);
-            assert_eq!(i, a.num_bits());
-        }
-    }
-
-    #[test]
-    fn fp_field_tests() {
-        crate::tests::field::random_field_tests::<Fp>();
-        crate::tests::field::random_sqrt_tests::<Fp>();
-    }
-
-    #[test]
-    fn test_fp_ordering() {
-        // FpRepr's ordering is well-tested, but we still need to make sure the Fp
-        // elements aren't being compared in Montgomery form.
-        for i in 0..100 {
-            let a = Fp::from(i + 1);
-            let b = Fp::from(i);
-            assert!(a > b, "{}: {:?} > {:?}", i, a, b);
-        }
-    }
-
-    #[test]
-    fn test_inversion() {
-        let a = Fp::from_raw_unchecked([
-            0x43b4_3a50_78ac_2076,
-            0x1ce0_7630_46f8_962b,
-            0x724a_5276_486d_735c,
-            0x6f05_c2a6_282d_48fd,
-            0x2095_bd5b_b4ca_9331,
-            0x03b3_5b38_94b0_f7da,
-        ]);
-        let b = Fp::from_raw_unchecked([
-            0x69ec_d704_0952_148f,
-            0x985c_cc20_2219_0f55,
-            0xe19b_ba36_a9ad_2f41,
-            0x19bb_16c9_5219_dbd8,
-            0x14dc_acfd_fb47_8693,
-            0x115f_f58a_fff9_a8e1,
-        ]);
-
-        assert_eq!(a.invert().unwrap(), b);
-        assert!(bool::from(Fp::ZERO.invert().is_none()));
-    }
+    let mut a = Fp::ONE;
+    a.zeroize();
+    assert!(bool::from(a.is_zero()));
 }

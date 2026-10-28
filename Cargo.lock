@@ -2360,7 +2360,7 @@ dependencies = [
 name = "bls-blueprint"
 version = "0.2.0"
 dependencies = [
- "blsful 4.1.0",
+ "blsful",
  "blueprint-sdk",
  "crossbeam-channel",
  "futures",
@@ -2379,37 +2379,11 @@ dependencies = [
 
 [[package]]
 name = "blsful"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcfcc41b14cb6ac1fc9b0aeeda75d3c4a50275588b06ad4a9a29e2a9cf055f08"
-dependencies = [
- "anyhow",
- "blstrs_plus 0.8.18",
- "hex",
- "hkdf 0.12.4",
- "merlin",
- "pairing",
- "rand 0.8.6",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
- "serde",
- "serde_bare",
- "sha2 0.10.9",
- "sha3 0.10.9",
- "subtle",
- "thiserror 2.0.21",
- "uint-zigzag",
- "vsss-rs 5.4.0",
- "zeroize",
-]
-
-[[package]]
-name = "blsful"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17d42c3794a522557288b67007adbc3536efb3b23a2d1c8a06de5e1e095499ff"
 dependencies = [
- "blstrs_plus 0.9.0",
+ "blstrs_plus",
  "hkdf 0.13.0",
  "merlin",
  "rand 0.10.2",
@@ -2439,30 +2413,12 @@ dependencies = [
 
 [[package]]
 name = "blstrs_plus"
-version = "0.8.18"
-dependencies = [
- "arrayref",
- "blst",
- "elliptic-curve 0.13.8",
- "elliptic-curve-tools 0.2.0",
- "ff 0.13.1",
- "group 0.13.0",
- "pairing",
- "rand_core 0.6.4",
- "serde",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "blstrs_plus"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4fedb991613af9ef3a2997be47f3f9cfafdfe74621550a13c9c7adaa10b072a"
 dependencies = [
  "arrayref",
  "elliptic-curve 0.13.8",
  "elliptic-curve 0.14.1",
+ "elliptic-curve-tools 0.2.0",
  "ff 0.13.1",
  "ff 0.14.0",
  "group 0.13.0",
@@ -4108,7 +4064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -5164,7 +5120,7 @@ name = "gennaro-dkg"
 version = "1.0.0-rc6"
 dependencies = [
  "anyhow",
- "blsful 3.1.0",
+ "blsful",
  "elliptic-curve 0.13.8",
  "elliptic-curve-tools 0.2.0",
  "merlin",
@@ -5259,9 +5215,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0f9ef7462f7c099f518d754361858f86d8a07af53ba9af0fe635bbccb151a63"
 dependencies = [
  "ff 0.13.1",
- "rand 0.8.6",
  "rand_core 0.6.4",
- "rand_xorshift 0.3.0",
  "subtle",
 ]
 
@@ -8180,7 +8134,7 @@ dependencies = [
  "num-traits",
  "rand 0.9.4",
  "rand_chacha 0.9.0",
- "rand_xorshift 0.4.0",
+ "rand_xorshift",
  "regex-syntax",
  "rusty-fork",
  "tempfile",
@@ -8462,15 +8416,6 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
-
-[[package]]
-name = "rand_xorshift"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d25bf25ec5ae4a3f1b92f929810509a2f53d7dca2f50b794ff57e3face536c8f"
-dependencies = [
- "rand_core 0.6.4",
-]
 
 [[package]]
 name = "rand_xorshift"
@@ -10633,12 +10578,6 @@ dependencies = [
  "hex",
  "static_assertions",
 ]
-
-[[package]]
-name = "uint-zigzag"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61faa33dc26b2851a37da5390a1a4cac015887b1e97ecd77ce7b4f987431de9f"
 
 [[package]]
 name = "unarray"
