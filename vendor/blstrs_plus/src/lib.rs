@@ -1,126 +1,114 @@
-//! # `blstrs`
+//! # `blstrs_plus`
 //!
-//! An implementation of the BLS12-381 pairing-friendly elliptic curve construction.
+//! This crate provides an implementation of the BLS12-381 pairing-friendly elliptic
+//! curve construction.
+//!
+//! * **This implementation has not been reviewed or audited. Use at your own risk.**
+//! * This implementation targets Rust `1.87` or later.
+//! * This implementation does not require the Rust standard library.
+//! * All operations are constant time unless explicitly noted.
 
-#![deny(clippy::all, clippy::perf, clippy::correctness)]
+#![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+// Catch documentation errors caused by code changes.
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(missing_debug_implementations)]
+#![deny(missing_docs)]
+// #![deny(unsafe_code)]
+#![allow(clippy::too_many_arguments)]
 #![allow(clippy::many_single_char_names)]
-#![allow(clippy::wrong_self_convention)]
+// This lint is described at
+// https://rust-lang.github.io/rust-clippy/master/index.html#suspicious_arithmetic_impl
+// In our library, some of the arithmetic involving extension fields will necessarily
+// involve various binary operators, and so this lint is triggered unnecessarily.
+#![allow(clippy::suspicious_arithmetic_impl)]
 
-#[cfg(not(target_endian = "little"))]
-compile_error!("blstrs is only supported on little endian architectures");
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
+#[cfg(any(test, feature = "std"))]
 #[macro_use]
-mod macros;
-
-mod fp;
-mod fp12;
-mod fp2;
-mod fp6;
-mod g1;
-mod g2;
-mod gt;
-mod pairing;
-mod scalar;
-mod traits;
-mod util;
-
-pub use g1::{G1Affine, G1Compressed, G1Projective, G1Uncompressed};
-pub use g2::{G2Affine, G2Compressed, G2Prepared, G2Projective, G2Uncompressed};
-pub use gt::Gt;
-pub use pairing::*;
-pub use scalar::Scalar;
-pub use traits::Compress;
-
-#[cfg(feature = "serde")]
-mod serde_impl;
-
-#[cfg(test)]
-mod tests;
-
-// export for benchmarking only
-#[cfg(feature = "__private_bench")]
-pub use crate::{fp::Fp, fp12::Fp12, fp2::Fp2};
-
-use ff::Field;
-use group::prime::PrimeCurveAffine;
-use pairing_lib::{Engine, MultiMillerLoop, PairingCurveAffine};
+extern crate std;
 
 pub use elliptic_curve;
+pub use elliptic_curve_013;
 pub use ff;
+pub use ff_013;
+#[cfg(feature = "groups")]
 pub use group;
-pub use pairing_lib;
+#[cfg(feature = "groups")]
+pub use group_013;
 
-/// Bls12-381 engine
-#[derive(Debug, Copy, Clone)]
-pub struct Bls12;
+#[cfg(test)]
+#[cfg(feature = "groups")]
+mod tests;
 
-impl Engine for Bls12 {
-    type Fr = Scalar;
-    type G1 = G1Projective;
-    type G1Affine = G1Affine;
-    type G2 = G2Projective;
-    type G2Affine = G2Affine;
-    type Gt = Gt;
+#[macro_use]
+mod util;
 
-    fn pairing(p: &Self::G1Affine, q: &Self::G2Affine) -> Self::Gt {
-        pairing(p, q)
-    }
+/// Notes about how the BLS12-381 elliptic curve is designed, specified
+/// and implemented by this library.
+pub mod notes {
+    pub mod design;
+    pub mod serialization;
 }
 
-impl MultiMillerLoop for Bls12 {
-    type G2Prepared = G2Prepared;
-    type Result = MillerLoopResult;
+mod compat_014;
+mod scalar;
 
-    /// Computes $$\sum_{i=1}^n \textbf{ML}(a_i, b_i)$$ given a series of terms
-    /// $$(a_1, b_1), (a_2, b_2), ..., (a_n, b_n).$$
-    fn multi_miller_loop(terms: &[(&Self::G1Affine, &Self::G2Prepared)]) -> Self::Result {
-        let mut res = blst::blst_fp12::default();
+#[cfg(target_arch = "wasm32")]
+pub use scalar::run_test_wasm;
+pub use scalar::{Scalar, ScalarLe};
 
-        for (i, (p, q)) in terms.iter().enumerate() {
-            let mut tmp = blst::blst_fp12::default();
-            if (p.is_identity() | q.is_identity()).into() {
-                // Define pairing with zero as one, matching what `pairing` does.
-                tmp = crate::fp12::Fp12::ONE.0;
-            } else {
-                unsafe {
-                    blst::blst_miller_loop_lines(&mut tmp, q.lines.as_ptr(), &p.0);
-                }
-            }
-            if i == 0 {
-                res = tmp;
-            } else {
-                unsafe {
-                    blst::blst_fp12_mul(&mut res, &res, &tmp);
-                }
-            }
-        }
+#[cfg(all(feature = "groups", not(feature = "expose-fields")))]
+mod fp;
+#[cfg(feature = "expose-fields")]
+pub mod fp;
+#[cfg(all(feature = "groups", not(feature = "expose-fields")))]
+mod fp2;
+#[cfg(feature = "expose-fields")]
+pub mod fp2;
+#[cfg(feature = "groups")]
+mod g1;
+#[cfg(feature = "groups")]
+mod g2;
 
-        MillerLoopResult(crate::fp12::Fp12(res))
-    }
-}
+#[cfg(feature = "groups")]
+pub use g1::{G1Affine, G1Projective};
+#[cfg(feature = "expose-fields")]
+pub use g1::{G1Compressed, G1Uncompressed};
+#[cfg(feature = "groups")]
+pub use g2::{G2Affine, G2Projective};
+#[cfg(feature = "expose-fields")]
+pub use g2::{G2Compressed, G2Uncompressed};
 
-use elliptic_curve::{
+mod fp12;
+mod fp6;
+
+use elliptic_curve_013::{
+    Curve, FieldBytes, FieldBytesEncoding, PrimeCurve,
     bigint::{ArrayEncoding, U384},
     consts::U48,
     point::PointCompression,
-    Curve, FieldBytes, FieldBytesEncoding, PrimeCurve,
 };
 
-/// An engine for operations generic G1 operations
+/// An engine for generic G1 operations.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Bls12381G1;
 
 unsafe impl Send for Bls12381G1 {}
 unsafe impl Sync for Bls12381G1 {}
 
-/// An engine for operations generic G2 operations
+/// An engine for generic G2 operations.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Bls12381G2;
 
 impl Curve for Bls12381G1 {
     type FieldBytesSize = U48;
     type Uint = U384;
-    const ORDER: U384 = U384::from_be_hex("0000000000000000000000000000000073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
+    const ORDER: U384 = U384::from_be_hex(
+        "0000000000000000000000000000000073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001",
+    );
 }
 
 impl PrimeCurve for Bls12381G1 {}
@@ -142,7 +130,9 @@ impl FieldBytesEncoding<Bls12381G1> for U384 {
 impl Curve for Bls12381G2 {
     type FieldBytesSize = U48;
     type Uint = U384;
-    const ORDER: U384 = U384::from_be_hex("0000000000000000000000000000000073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
+    const ORDER: U384 = U384::from_be_hex(
+        "0000000000000000000000000000000073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001",
+    );
 }
 
 impl PrimeCurve for Bls12381G2 {}
@@ -161,15 +151,19 @@ impl FieldBytesEncoding<Bls12381G2> for U384 {
     }
 }
 
-#[cfg(feature = "gpu")]
-fn u64_to_u32(limbs: &[u64]) -> Vec<u32> {
-    limbs
-        .iter()
-        .flat_map(|limb| vec![(limb & 0xFFFF_FFFF) as u32, (limb >> 32) as u32])
-        .collect()
-}
+/// The BLS parameter x for BLS12-381 is -0xd201000000010000
+#[cfg(feature = "groups")]
+const BLS_X: u64 = 0xd201_0000_0001_0000;
+#[cfg(feature = "groups")]
+const BLS_X_IS_NEGATIVE: bool = true;
 
-#[test]
-fn bls12_engine_tests() {
-    crate::tests::engine::engine_tests::<Bls12>();
-}
+#[cfg(feature = "pairings")]
+mod pairings;
+
+#[cfg(feature = "pairings")]
+pub use pairings::{Bls12, Gt, MillerLoopResult, pairing};
+
+#[cfg(feature = "pairings")]
+pub use pairings::{G2Prepared, multi_miller_loop};
+
+mod isogeny;

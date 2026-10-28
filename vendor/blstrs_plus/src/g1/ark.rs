@@ -5,8 +5,8 @@ use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid, Validate,
     Write,
 };
-use blst::{blst_p1, blst_p1_mult};
-use group::{Curve, Group};
+use group_013::Group;
+use group_013::cofactor::CofactorGroup;
 use num_traits::Zero;
 use rand::Rng;
 
@@ -20,12 +20,12 @@ impl CanonicalSerialize for G1Projective {
             Compress::No => {
                 let _ = writer
                     .write(&self.to_uncompressed())
-                    .map_err(|e| SerializationError::IoError(e))?;
+                    .map_err(SerializationError::IoError)?;
             }
             Compress::Yes => {
                 let _ = writer
                     .write(&self.to_compressed())
-                    .map_err(|e| SerializationError::IoError(e))?;
+                    .map_err(SerializationError::IoError)?;
             }
         }
         Ok(())
@@ -52,14 +52,14 @@ impl CanonicalDeserialize for G1Projective {
                 let mut bytes = [0u8; G1Projective::UNCOMPRESSED_BYTES];
                 reader
                     .read(&mut bytes)
-                    .map_err(|e| SerializationError::IoError(e))?;
+                    .map_err(SerializationError::IoError)?;
                 G1Projective::from_uncompressed(&bytes)
             }
             Compress::Yes => {
                 let mut bytes = [0u8; G1Projective::COMPRESSED_BYTES];
                 reader
                     .read(&mut bytes)
-                    .map_err(|e| SerializationError::IoError(e))?;
+                    .map_err(SerializationError::IoError)?;
                 G1Projective::from_compressed(&bytes)
             }
         };
@@ -74,8 +74,7 @@ impl CanonicalDeserialize for G1Projective {
 
 impl Valid for G1Projective {
     fn check(&self) -> Result<(), SerializationError> {
-        let aff = self.to_affine();
-        if bool::from(aff.is_torsion_free() & aff.is_on_curve()) {
+        if bool::from(self.is_torsion_free() & self.is_on_curve()) {
             Ok(())
         } else {
             Err(SerializationError::InvalidData)
@@ -107,7 +106,7 @@ impl ArkGroup for G1Projective {
     }
 
     fn double_in_place(&mut self) -> &mut Self {
-        *self = elliptic_curve::Group::double(self);
+        *self = self.double();
         self
     }
 
@@ -116,11 +115,6 @@ impl ArkGroup for G1Projective {
         for (i, b) in other.as_ref().iter().enumerate() {
             bytes[i * 8..(i + 1) * 8].copy_from_slice(&b.to_le_bytes())
         }
-
-        const NBITS: usize = 255;
-
-        let mut out = blst_p1::default();
-        unsafe { blst_p1_mult(&mut out, &self.0, bytes.as_ptr(), NBITS) };
-        G1Projective(out)
+        G1Projective::multiply(self, &bytes)
     }
 }
