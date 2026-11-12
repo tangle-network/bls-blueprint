@@ -2,7 +2,7 @@ use crate::{
     DkgResult, Error, GroupHasher, Participant, ParticipantImpl, Round, RoundOutputGenerator,
 };
 use elliptic_curve::group::GroupEncoding;
-use elliptic_curve_tools::SumOfProducts;
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use vsss_rs::{DefaultShare, ReadableShareSet};
 
 impl<I: ParticipantImpl<G> + Default, G: GroupHasher + SumOfProducts + GroupEncoding + Default>

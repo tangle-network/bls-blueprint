@@ -27,7 +27,7 @@ tokio = { version = "1", default-features = false, features = ["sync", "rt"] }
 futures = "0.3"
 
 # MPC specific deps
-blsful = "4.1"
+blsful = "4.2"
 snowbridge-milagro-bls = "1.5"
 gennaro-dkg = { version = "1.0.0-rc6", default-features = false, features = ["bls"] }
 
@@ -42,7 +42,6 @@ std = []
 
 [patch.crates-io]
 gennaro-dkg = { path = "vendor/gennaro-dkg" }
-blstrs_plus = { path = "vendor/blstrs_plus" }
 tokio-tar = { path = "vendor/tokio-tar" }
 # Keep the libp2p 0.56 API while moving DNS resolution to hickory 0.26.
 libp2p-dns = { path = "vendor/libp2p-dns" }

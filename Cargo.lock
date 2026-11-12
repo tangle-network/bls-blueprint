@@ -2379,17 +2379,17 @@ dependencies = [
 
 [[package]]
 name = "blsful"
-version = "4.1.0"
+version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17d42c3794a522557288b67007adbc3536efb3b23a2d1c8a06de5e1e095499ff"
+checksum = "c4b29a676e7bcc3b174652d1cfc4a7d2fc7adb0296b89828e5b1c39974d9bf2e"
 dependencies = [
  "blstrs_plus",
+ "hash2curve",
  "hkdf 0.13.0",
  "merlin",
  "rand 0.10.2",
  "serde",
  "serde_bare",
- "sha2 0.10.9",
  "sha2 0.11.0",
  "shake",
  "subtle",
@@ -2413,21 +2413,22 @@ dependencies = [
 
 [[package]]
 name = "blstrs_plus"
-version = "0.9.0"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76dcf96786903f9bba66ad90e72fe04b8463115cc09de932de72d4aab63702f9"
 dependencies = [
  "arrayref",
- "elliptic-curve 0.13.8",
  "elliptic-curve 0.14.1",
- "elliptic-curve-tools 0.2.0",
  "ff 0.13.1",
  "ff 0.14.0",
  "group 0.13.0",
  "group 0.14.0",
+ "hash2curve",
  "hex",
  "pairing",
  "rand_core 0.6.4",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "subtle",
  "zeroize",
 ]
@@ -4656,7 +4657,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a0d5e534f103b079a71ef1d66c6e62c89413f1b62709ca11f744429b4afe5b4"
 dependencies = [
  "elliptic-curve 0.14.1",
+ "ff 0.13.1",
+ "group 0.13.0",
  "heapless 0.9.3",
+ "rand_core 0.10.1",
  "serde",
  "serdect 0.4.3",
 ]
@@ -5123,12 +5127,13 @@ dependencies = [
  "blsful",
  "elliptic-curve 0.13.8",
  "elliptic-curve-tools 0.2.0",
+ "elliptic-curve-tools 0.3.0",
  "merlin",
  "postcard",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "vsss-rs 5.4.0",
 ]
@@ -5266,6 +5271,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "hash2curve"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eaf40612d7d854743e7189228a6d528f0f6e8502cf6a0cb831d28a218b7f3f6"
+dependencies = [
+ "digest 0.11.3",
+ "elliptic-curve 0.14.1",
 ]
 
 [[package]]
@@ -9910,7 +9925,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

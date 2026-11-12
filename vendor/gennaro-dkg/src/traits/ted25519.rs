@@ -16,7 +16,7 @@ impl GroupHasher for WrappedRistretto {
 impl GroupHasher for WrappedEdwards {
     fn hash_to_curve(msg: &[u8]) -> Self {
         const DST: &[u8] = b"edwards25519_XMD:SHA-512_ELL2_RO_";
-        let pt = curve25519_dalek_ml::edwards::EdwardsPoint::hash_to_curve::<
+        let pt = curve25519_dalek_ml::edwards::EdwardsPoint::hash_to_curve_ro::<
             ExpandMsgXmd<sha2::Sha512>,
         >(msg, DST);
         WrappedEdwards(unsafe {

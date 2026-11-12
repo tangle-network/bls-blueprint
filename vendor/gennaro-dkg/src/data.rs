@@ -1,6 +1,7 @@
 use crate::{GroupHasher, SecretShare};
 use elliptic_curve::{group::GroupEncoding, PrimeField};
-use elliptic_curve_tools::*;
+use elliptic_curve_tools::group;
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

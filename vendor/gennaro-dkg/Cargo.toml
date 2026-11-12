@@ -50,11 +50,12 @@ path = "tests/jubjub.rs"
 version = "1.0"
 
 [dependencies.blsful]
-version = "4.1"
+version = "4.2"
 optional = true
 
 [dependencies.curve25519-dalek-ml]
-version = "4.2"
+version = "4.4"
+features = ["group"]
 optional = true
 
 [dependencies.ed448-goldilocks-plus]
@@ -65,9 +66,10 @@ optional = true
 version = "0.13"
 features = ["hash2curve"]
 
-[dependencies.elliptic-curve-tools]
-version = "0.2"
-features = ["std"]
+[dependencies]
+elliptic-curve-tools = { version = "0.2", features = ["std"] }
+elliptic-curve-tools-03 = { package = "elliptic-curve-tools", version = "0.3", features = ["std", "legacy"] }
+sha2_011 = { package = "sha2", version = "0.11", optional = true }
 
 [dependencies.jubjub-plus]
 version = "0.10"
@@ -132,7 +134,7 @@ version = "2.0"
 version = "5.0.0"
 
 [dev-dependencies.blsful]
-version = "4.1"
+version = "4.2"
 
 [dev-dependencies.ed448-goldilocks-plus]
 version = "0.13"
@@ -168,7 +170,7 @@ features = ["curve25519"]
 [features]
 bls = [
     "blsful",
-    "sha2",
+    "sha2_011",
 ]
 curve25519 = [
     "vsss-rs/curve25519",

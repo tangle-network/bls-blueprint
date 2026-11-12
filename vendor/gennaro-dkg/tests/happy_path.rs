@@ -1,5 +1,5 @@
 use elliptic_curve::Field;
-use elliptic_curve_tools::SumOfProducts;
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use gennaro_dkg::*;
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
