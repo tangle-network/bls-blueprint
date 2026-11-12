@@ -3,7 +3,7 @@ use crate::{
     Round1OutputGenerator, RoundOutputGenerator, SecretShare,
 };
 use elliptic_curve::group::GroupEncoding;
-use elliptic_curve_tools::*;
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use vsss_rs::{
     CtIsZero, FeldmanVerifierSet, PedersenResult, PedersenVerifierSet, ShareVerifierGroup,
     VecFeldmanVerifierSet, VecPedersenVerifierSet,

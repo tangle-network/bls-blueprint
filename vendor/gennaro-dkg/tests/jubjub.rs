@@ -1,6 +1,5 @@
-use blsful::inner_types::GroupEncoding;
-use elliptic_curve::Group;
-use elliptic_curve_tools::SumOfProducts;
+use elliptic_curve::{group::GroupEncoding, Group};
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use gennaro_dkg::{
     AnyParticipant, GroupHasher, Parameters, ParticipantRoundOutput, RefreshParticipant, Round,
     RoundOutputGenerator, SecretParticipant,

@@ -14,7 +14,7 @@
 //!
 //! ```
 //! use gennaro_dkg::{
-//!     elliptic_curve_tools::SumOfProducts,
+//!     elliptic_curve_tools_03::legacy::SumOfProducts,
 //!     vsss_rs::{
 //!         elliptic_curve::{group::GroupEncoding, Group, PrimeField},
 //!         Share, ShareElement, IdentifierPrimeField, ReadableShareSet
@@ -121,6 +121,7 @@
 
 pub use elliptic_curve;
 pub use elliptic_curve_tools;
+pub use elliptic_curve_tools_03;
 pub use rand_core;
 pub use vsss_rs;
 
@@ -144,7 +145,7 @@ pub use traits::*;
 mod tests {
     use super::*;
     use elliptic_curve::group::GroupEncoding;
-    use elliptic_curve_tools::SumOfProducts;
+    use elliptic_curve_tools_03::legacy::SumOfProducts;
     use rstest::*;
     use vsss_rs::{
         IdentifierPrimeField, ParticipantIdGeneratorCollection, ParticipantIdGeneratorType,

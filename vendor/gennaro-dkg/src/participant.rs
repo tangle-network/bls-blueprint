@@ -15,7 +15,7 @@ use crate::{
     Round3Data, Round4Data, RoundOutputGenerator,
 };
 use elliptic_curve::{group::GroupEncoding, Field, Group, PrimeField};
-use elliptic_curve_tools::*;
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use merlin::Transcript;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};

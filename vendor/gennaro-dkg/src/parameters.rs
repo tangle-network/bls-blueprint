@@ -1,6 +1,5 @@
 use super::*;
-use crate::GroupHasher;
-use elliptic_curve_tools::*;
+use elliptic_curve_tools_03::legacy::SumOfProducts;
 use vsss_rs::{IdentifierPrimeField, ParticipantIdGeneratorType};
 
 /// The parameters used by the DKG participants.
